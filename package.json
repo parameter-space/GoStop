@@ -1,0 +1,15 @@
+{
+  "name": "gostop-online",
+  "version": "1.0.0",
+  "description": "친구들끼리 즐기는 온라인 고스톱",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "test": "node server/test/engine.test.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "nanoid": "^3.3.7",
+    "socket.io": "^4.7.5"
+  }
+}

@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>고스톱</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<div id="screen-lobby" class="screen">
+  <div class="panel">
+    <h1>고스톱</h1>
+    <div class="lobby-box">
+      <h2>방 만들기</h2>
+      <input id="create-name" placeholder="이름" maxlength="12" />
+      <button id="btn-create">방 만들기</button>
+    </div>
+    <div class="lobby-box">
+      <h2>방 참가하기</h2>
+      <input id="join-code" placeholder="방 코드" maxlength="5" style="text-transform:uppercase" />
+      <input id="join-name" placeholder="이름" maxlength="12" />
+      <button id="btn-join">참가하기</button>
+    </div>
+    <p id="lobby-error" class="error"></p>
+  </div>
+</div>
+
+<div id="screen-room" class="screen hidden">
+  <div class="panel">
+    <h2>방 코드: <span id="room-code-label"></span></h2>
+    <p class="muted">이 코드를 친구들에게 알려주세요. (URL을 그대로 공유해도 됩니다)</p>
+    <ul id="room-player-list"></ul>
+    <div id="host-controls" class="hidden">
+      <label>점당 금액(원): <input id="point-value-input" type="number" min="0" step="10" /></label>
+      <button id="btn-set-point">적용</button>
+      <button id="btn-start">게임 시작</button>
+      <button id="btn-destroy-room-lobby" class="danger-btn">방 폭파</button>
+    </div>
+  </div>
+</div>
+
+<div id="screen-game" class="screen hidden">
+  <div id="opponents" class="opponents"></div>
+
+  <div class="board">
+    <div class="board-info">
+      <div id="deck-stack" class="deck-stack"><div></div><div></div><div></div></div>
+      <span id="deck-count"></span>
+      <span id="turn-indicator"></span>
+    </div>
+    <div id="floor" class="floor"></div>
+  </div>
+
+  <div class="me">
+    <div class="me-header">
+      <div id="my-score" class="score-badge"></div>
+      <div class="my-actions">
+        <button id="btn-shake" class="hidden">흔들기</button>
+        <button id="btn-bomb" class="hidden">폭탄</button>
+      </div>
+    </div>
+    <div id="my-captured" class="captured-row"></div>
+    <div id="my-hand" class="hand-row"></div>
+  </div>
+
+  <div id="ledger-bar" class="ledger-bar"></div>
+  <div id="log-feed" class="log-feed"></div>
+
+  <div id="host-round-controls" class="hidden">
+    <span id="host-active-round-controls" class="hidden">
+      <label>점당 금액: <input id="point-value-input-game" type="number" min="0" step="10" style="width:80px" /></label>
+      <button id="btn-set-point-game">적용</button>
+      <button id="btn-force-end">이 판 무효 처리</button>
+    </span>
+    <button id="btn-destroy-room" class="danger-btn">방 폭파</button>
+  </div>
+</div>
+
+<div id="event-banner" class="event-banner hidden"></div>
+<div id="score-popups"></div>
+
+<!-- 매치 선택 모달 -->
+<div id="modal-choice" class="modal hidden">
+  <div class="modal-box">
+    <h3>어떤 카드와 맞출까요?</h3>
+    <div id="choice-options" class="choice-options"></div>
+  </div>
+</div>
+
+<!-- 고/스톱 모달 -->
+<div id="modal-gostop" class="modal hidden">
+  <div class="modal-box">
+    <h3>고(Go) 하시겠습니까?</h3>
+    <p id="gostop-score-label"></p>
+    <div class="modal-actions">
+      <button id="btn-go">고!</button>
+      <button id="btn-stop">스톱</button>
+    </div>
+  </div>
+</div>
+
+<!-- 흔들기 선택 모달 -->
+<div id="modal-shake" class="modal hidden">
+  <div class="modal-box">
+    <h3>어느 월을 흔들까요?</h3>
+    <div id="shake-options" class="choice-options"></div>
+    <button id="shake-cancel">취소</button>
+  </div>
+</div>
+
+<!-- 폭탄 선택 모달 -->
+<div id="modal-bomb" class="modal hidden">
+  <div class="modal-box">
+    <h3>어느 월로 폭탄을 낼까요?</h3>
+    <div id="bomb-options" class="choice-options"></div>
+    <button id="bomb-cancel">취소</button>
+  </div>
+</div>
+
+<!-- 라운드 결과 모달 -->
+<div id="modal-result" class="modal hidden">
+  <div class="modal-box wide">
+    <h3 id="result-title"></h3>
+    <div id="result-body"></div>
+    <div id="result-host-actions" class="hidden">
+      <button id="btn-next-round">다음 판 시작</button>
+    </div>
+  </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="client.js"></script>
+</body>
+</html>
