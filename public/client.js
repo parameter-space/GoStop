@@ -643,6 +643,49 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     };
   }
 
+  // buildApproachKeyframes가 만든 "접근"(막 손/덱에서 튀어나오는 되감기 자세 포함) 뒤에,
+  // 착지 직전 정지 구간(히트스톱)과 살짝 눌렸다 튕기는 정착 한 번을 덧붙인다. 손/덱에서
+  // 처음 나와 곧장 최종 위치로 가는 "차가운(cold)" 비행(그냥 내기 등)에 쓴다.
+  function buildFlightKeyframes(style, dx, dy) {
+    const { keyframes: baseFrames, easing } = buildApproachKeyframes(style, dx, dy);
+    const overshoot = baseFrames[baseFrames.length - 2];
+    const finalFrame = baseFrames[baseFrames.length - 1];
+    const holdOffset = Math.min(overshoot.offset + 0.1, 0.97);
+    const settleOffset = Math.min(holdOffset + 0.02, 0.99);
+    const keyframes = [
+      ...baseFrames.slice(0, -1),
+      { offset: holdOffset, transform: overshoot.transform },
+      { offset: settleOffset, transform: 'translate(0px, 0px) scale(0.95) rotate(0deg)' },
+      finalFrame,
+    ];
+    return { keyframes, easing };
+  }
+
+  // buildFlightKeyframes와 같은 착지 연출(히트스톱+정착)이지만, "막 손/덱에서 튀어나오는"
+  // 되감기 자세(scale(0.94)/rotate(-4deg) 시작)가 없다 - 이미 짝과 부딪혀서 한 번 멈췄다가
+  // 그 자리(scale 1/rotate 0)에서 그대로 이어서 먹은패로 쓸려 들어가는 마지막 구간(스윕)
+  // 전용이다. flyCardViaMeeting의 스윕 단계와, 경유지 없이 이 스윕과 정확히 같은 시각에
+  // 함께 쓸려 들어가는 바닥 짝(flyCard의 sweepStyle) 둘 다 이 모양을 쓴다 - 그래야 "부딪힌
+  // 뒤 가만히 있다가 함께 쓸려간다"는 이어지는 한 동작으로, 서로 정확히 같은 곡선으로
+  // 움직인다. 예전엔 flyCardViaMeeting의 스윕이 "접근+대기+스윕"을 하나로 이어붙인 단일
+  // easing 곡선의 일부였는데, 그러면 같은 시각에 독자적으로(새 애니메이션으로) 시작하는
+  // 바닥 짝의 flyCard(그 카드는 buildFlightKeyframes를 써서 되감기 자세부터 시작)와는
+  // 겉보기 타이밍은 같아도 그 순간의 속도 곡선(가속도)이 서로 달랐다 - "도착은 같은데
+  // 출발이 다르게 느껴진다"는 게 바로 이 증상이었다.
+  function buildSweepKeyframes(dx, dy) {
+    return {
+      easing: 'cubic-bezier(.2,.85,.3,1)',
+      keyframes: [
+        { offset: 0, transform: `translate(${dx}px, ${dy}px) scale(1) rotate(0deg)` },
+        { offset: 0.5, transform: `translate(${mix(dx, 0, 0.5)}px, ${mix(dy, 0, 0.5) - 18}px) scale(0.98) rotate(-2deg)` },
+        { offset: 0.78, transform: `translate(${mix(dx, 0, 1.05)}px, ${mix(dy, 0, 1.05)}px) scale(1.09) rotate(2deg)` },
+        { offset: 0.88, transform: `translate(${mix(dx, 0, 1.05)}px, ${mix(dy, 0, 1.05)}px) scale(1.09) rotate(2deg)` },
+        { offset: 0.9, transform: 'translate(0px, 0px) scale(0.95) rotate(0deg)' },
+        { offset: 1, transform: 'translate(0px, 0px) scale(1) rotate(0deg)' },
+      ],
+    };
+  }
+
   // 손패에서 낸/덱에서 뒤집은/이미 바닥에 있던 카드가 자기 최종 위치(먹은패 더미 또는
   // 바닥에 그대로)까지 날아가는 한 번의 여행을 재생한다. 착지 직전(약 80~92% 구간)에는
   // 일부러 같은 transform 값을 두 keyframe에 반복해서 "정지 구간(히트스톱)"을 만든다 -
@@ -651,7 +694,7 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
   // 원인이 됐는데, keyframe 값 자체를 정지시키면 브라우저가 평소 이동과 완전히 동일한
   // 방식(추가 JS 개입 없이)으로 처리해서 훨씬 매끄럽다. 모든 스타일을 같은 총 시간(DUR)
   // 으로 맞춰서 "덱은 빠르고 손은 느리고..." 식으로 제각각 다르게 느껴지던 것도 없앴다.
-  function flyCard(elm, dx, dy, style, delay = 0, primaryMover = false) {
+  function flyCard(elm, dx, dy, style, delay = 0, primaryMover = false, sweepStyle = false) {
     elm.classList.remove('pop');
     elm.style.transform = '';
     const myGen = cancelPriorAnim(elm);
@@ -683,23 +726,10 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     // 날아다니는 동안은 이 트랜지션을 아예 꺼둔다 - 끝나면 원래대로 복원한다.
     elm.style.transition = 'none';
     const DUR = approachDurFor(style);
-    const { keyframes: baseFrames, easing } = buildApproachKeyframes(style, dx, dy);
-    // 마지막 오버슈트 keyframe과 최종(1) keyframe 사이에, 오버슈트와 같은 transform 값을
-    // 가진 keyframe을 하나 더 끼워 넣어 착지 직전 "정지 구간(히트스톱)"을 만든다 - 격투
-    // 게임에서 타격의 무게감을 표현할 때 쓰는 기법과 같다. 그 다음, 딱 멈췄다가 바로
-    // scale(1)로 끝내는 대신 살짝 눌렸다(scale을 1보다 더 작게) 튕겨 돌아오는 "쫀득한"
-    // 정착 한 번을 더 넣는다 - 오버슈트(부풀어 오름)+히트스톱(정지)+살짝 눌림(되튕김)까지
-    // 셋이 이어져야 만화적인 탄성(스쿼시&스트레치)이 느껴진다.
-    const overshoot = baseFrames[baseFrames.length - 2];
-    const finalFrame = baseFrames[baseFrames.length - 1];
-    const holdOffset = Math.min(overshoot.offset + 0.1, 0.97);
-    const settleOffset = Math.min(holdOffset + 0.02, 0.99);
-    const keyframes = [
-      ...baseFrames.slice(0, -1),
-      { offset: holdOffset, transform: overshoot.transform },
-      { offset: settleOffset, transform: 'translate(0px, 0px) scale(0.95) rotate(0deg)' },
-      finalFrame,
-    ];
+    // sweepStyle: 경유지 없이도 이미 부딪혀 짝이 된 채로 캡처되어 함께 쓸려가는 바닥 짝
+    // (animateNewCards의 isSweptCapture) - flyCardViaMeeting의 스윕 구간과 정확히 같은
+    // 모양(되감기 자세 없음)으로 재생해서 "함께 쓸려 들어간다"는 게 보이게 한다.
+    const { keyframes, easing } = sweepStyle ? buildSweepKeyframes(dx, dy) : buildFlightKeyframes(style, dx, dy);
 
     const anim = elm.animate(keyframes, { duration: DUR, easing, delay, fill: delay > 0 ? 'both' : 'none' });
 
@@ -735,13 +765,23 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
 
   // 캡처 전용: 손패에서 낸/덱에서 뒤집은 카드가 곧바로 내 먹은패로 가지 않고, ①공용
   // 필드의 짝이 있던 자리까지 날아가 거기서 부딪히고(타격 연출), ②waitMs만큼 머물다가,
-  // ③내 먹은패까지 마저 슬라이드해 들어가는 것을 **하나의 연속된 애니메이션**으로 재생한다
-  // (여러 elm.animate() 호출을 이어 붙이면 애니메이션 객체가 여러 개가 되어 서로 충돌할
-  // 여지가 생기므로, 하나의 keyframe 배열 안에 세 구간을 전부 담는다). waitMs는 "손패를
-  // 낸다 -> 덱을 뒤집는다 -> 그제서야 맞춰진 카드들이 전부 한꺼번에 쓸려 들어간다"는 순서를
-  // 지키기 위해 다른 페이즈의 캡처가 마저 끝날 때까지 기다리는 시간이다(자기 자신의 부딪힘
-  // 이후 남는 시간, 호출부의 globalSweepStart 계산 참고). 중간 지점 타격 연출은 실제
-  // keyframe 진행과 시간이 정확히 맞아떨어지도록 setTimeout으로 그 시점에 맞춰 재생한다.
+  // ③내 먹은패까지 마저 슬라이드해 들어간다. waitMs는 "손패를 낸다 -> 덱을 뒤집는다 ->
+  // 그제서야 맞춰진 카드들이 전부 한꺼번에 쓸려 들어간다"는 순서를 지키기 위해 다른
+  // 페이즈의 캡처가 마저 끝날 때까지 기다리는 시간이다(자기 자신의 부딪힘 이후 남는 시간,
+  // 호출부의 globalSweepStart 계산 참고).
+  //
+  // ①+②(접근+대기)와 ③(스윕)은 예전엔 keyframe offset 계산으로 이어붙인 "하나의"
+  // 애니메이션이었다. 문제는 이러면 스윕 구간이 "접근부터 시작하는 단일 easing 곡선"의
+  // 일부가 되어버려서, 정확히 같은 시각에 독자적으로 새 애니메이션을 시작하는 바닥 짝
+  // (경유지 없이 flyCard의 sweepStyle로 캡처되는 카드)과는 도착 시각은 똑같아도 그 구간
+  // 동안의 속도 곡선(가속도)이 서로 달라서 "출발이 서로 다르게 느껴진다"는 문제가 있었다.
+  // 그래서 ③ 스윕을 별도의(그러나 정확히 이어지는) 두 번째 elm.animate() 호출로 분리해서,
+  // flyCard의 sweepStyle과 완전히 동일한 buildSweepKeyframes 곡선을 그대로 재사용한다 -
+  // 이러면 바닥 짝과 정확히 같은 시각에 정확히 같은 모양으로 움직인다. 두 애니메이션이
+  // 같은 transform 속성을 동시에 건드리는 구간이 생기면 나중에 만든 쪽이 이겨서 먼저
+  // 것을 완전히 덮어버리므로(그러면 접근 애니메이션이 안 보이는 버그가 생긴다), ①+②는
+  // fill:'backwards'(자기 시작 전만 유지, 끝난 뒤엔 놓음)로, ③은 fill:'forwards'(자기
+  // 시작 전엔 아무 효과 없음, 끝난 뒤엔 유지)로 서로 겹치는 구간이 전혀 없게 나눴다.
   function flyCardViaMeeting(elm, dx, dy, style, delay, viaDx, viaDy, waitMs) {
     elm.classList.remove('pop');
     elm.style.transform = '';
@@ -758,30 +798,18 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
 
     const approachDur = approachDurFor(style);
     const sweepDur = approachDurFor('move'); // 맞춰지는 지점 -> 내 먹은패, 'move' 스타일 재사용
-    const TOTAL = approachDur + waitMs + sweepDur;
-    const approachEnd = approachDur / TOTAL;
-    const holdEnd = (approachDur + waitMs) / TOTAL;
+    const phase1Dur = approachDur + waitMs;
+    const sweepStart = delay + phase1Dur;
 
-    // 접근 구간(0~approachEnd) 모양 자체를, 도착 지점이 진짜 최종 위치(0,0)가 아니라
-    // 맞춰지는 지점(viaDx,viaDy)이 되도록 만든다(offsetScale=approachEnd로 그 시간 구간
-    // 안에 눌러 담음) - buildApproachKeyframes가 이미 이 매개변수화를 지원한다.
-    const approach = buildApproachKeyframes(style, dx, dy, viaDx, viaDy, approachEnd);
-    const keyframes = [...approach.keyframes];
-    if (holdEnd > approachEnd) {
-      keyframes.push({ offset: holdEnd, transform: `translate(${viaDx}px, ${viaDy}px) scale(1) rotate(0deg)` });
-    }
-    // 맞춰지는 지점에서 내 먹은패까지 마저 슬라이드(move 스타일 재사용, 이어지는 동작이라
-    // "막 던져진" 느낌의 시작 자세 없이 안정된 자세(scale 1/rotate 0)에서 바로 이어간다).
-    const sweepSpan = 1 - holdEnd;
-    const at = (f) => holdEnd + f * sweepSpan;
-    keyframes.push({ offset: at(0.5), transform: `translate(${mix(viaDx, 0, 0.5)}px, ${mix(viaDy, 0, 0.5) - 18}px) scale(0.98) rotate(-2deg)` });
-    keyframes.push({ offset: at(0.78), transform: `translate(${mix(viaDx, 0, 1.05)}px, ${mix(viaDy, 0, 1.05)}px) scale(1.09) rotate(2deg)` });
-    keyframes.push({ offset: at(0.9), transform: `translate(${mix(viaDx, 0, 1.05)}px, ${mix(viaDy, 0, 1.05)}px) scale(1.09) rotate(2deg)` });
-    // flyCard와 동일한 이유(오버슈트+히트스톱 뒤에 살짝 눌렸다 튕겨 돌아오는 "쫀득한" 정착).
-    keyframes.push({ offset: at(0.96), transform: 'translate(0px, 0px) scale(0.95) rotate(0deg)' });
-    keyframes.push({ offset: 1, transform: 'translate(0px, 0px) scale(1) rotate(0deg)' });
-
-    const anim = elm.animate(keyframes, { duration: TOTAL, easing: approach.easing, delay, fill: delay > 0 ? 'both' : 'none' });
+    // ①+②: 접근(도착 지점이 최종 위치가 아니라 맞춰지는 지점(viaDx,viaDy)이 되도록
+    // endDx/endDy를 넘긴다) 후, 남은 시간(waitMs) 동안은 같은 값을 유지해 가만히 대기한다
+    // (마지막 keyframe이 이미 viaDx,viaDy이므로 별도 keyframe 없이 duration만 늘리면
+    // WAAPI가 알아서 그 값을 끝까지 유지한다).
+    const approach = buildApproachKeyframes(style, dx, dy, viaDx, viaDy, 1);
+    const anim1 = elm.animate(approach.keyframes, {
+      duration: phase1Dur, easing: approach.easing, delay,
+      fill: delay > 0 ? 'backwards' : 'none',
+    });
 
     // 맞춰지는 지점 도착 타격(찌그러짐/충격링/플래시/소리) - 실제 keyframe 진행 시각과
     // 정확히 같은 시점(delay + approachDur)에 맞춰 재생한다. 이 setTimeout은 애니메이션
@@ -798,7 +826,19 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
       cardSlap();
     }, delay + approachDur);
 
-    anim.onfinish = () => {
+    // ③ 스윕: flyCard의 sweepStyle과 완전히 같은 모양(buildSweepKeyframes)을 맞춰지는
+    // 지점(viaDx,viaDy) -> 최종 위치(0,0)로 재생한다. anim1이 끝나는 바로 그
+    // 순간(sweepStart)에 시작하도록
+    // WAAPI 자체 delay로 미리 예약해둔다(정확한 타이밍을 위해 setTimeout으로 나중에
+    // 새로 만들지 않고, 지금 한꺼번에 예약함 - 브라우저 컴포지터가 직접 타이밍을 맞춰서
+    // JS 타이머 지연/오차가 끼어들 여지가 없다). fill:'forwards'라 anim1이 활성인 동안은
+    // 전혀 개입하지 않다가, 정확히 sweepStart부터 넘겨받는다.
+    const { keyframes: sweepKeyframes, easing: sweepEasing } = buildSweepKeyframes(viaDx, viaDy);
+    const anim2 = elm.animate(sweepKeyframes, {
+      duration: sweepDur, easing: sweepEasing, delay: sweepStart, fill: 'forwards',
+    });
+
+    anim2.onfinish = () => {
       elm.style.zIndex = '';
       elm.style.willChange = '';
       elm.style.transition = '';
@@ -808,7 +848,7 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
       if (flashed) groupPunch(elm);
       maybeFlashFormed(elm);
     };
-    return anim;
+    return anim2;
   }
 
   requestAnimationFrame(() => {
@@ -1024,10 +1064,17 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
       // 먹은패로 쓸려 들어가는(=primaryMover는 아니지만 willCapture인) 카드는 전역 스윕
       // 시각(globalSweepStart)에 맞춰 출발한다. 그 외(레이아웃이 밀려 몇 px 이동한 무관한
       // 카드)는 그냥 즉시 조용히 미끄러진다.
+      // 캡처되어 먹은패로 딸려가는(=primaryMover는 아니지만 willCapture인) 바닥 짝은,
+      // 경유지가 없어 그냥 flyCard로 곧장 최종 위치까지 가더라도 "막 손에서 던져진" 것이
+      // 아니라 "이미 부딪혀서 짝이 된 카드를 그제서야 함께 쓸어담는" 동작이다 - 그래서
+      // flyCard에 이 사실을 알려 되감기 자세(wind-up) 없이 바로 이어지는 모양으로
+      // 재생하게 한다(sweepStyle, 아래 flyCard 참고) - 정확히 같은 시각에 독자적으로 같은
+      // 모양을 타는 flyCardViaMeeting의 스윕 구간과 이 카드가 똑같이 움직이게 하기 위함.
+      const isSweptCapture = !primary && willCapture(elm);
       let delay;
       if (style === 'deck') delay = deckPhaseStart;
       else if (bombIndex > 0) delay = bombIndex * 70;
-      else if (!primary && willCapture(elm)) delay = globalSweepStart;
+      else if (isSweptCapture) delay = globalSweepStart;
       else if (primary && id === evt.handCardId && isJjokPair) {
         // "쪽": 이 손패 카드는 만날 바닥 짝이 없어서(=경유 지점이 없어서) 그냥 즉시
         // 출발하면 덱 카드보다 훨씬 먼저 도착해버린다 - 도착 시각이 덱 카드와 같아지도록
@@ -1064,7 +1111,7 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
         anim = flyCardViaMeeting(elm, dx, dy, style, delay, viaDx, viaDy, waitMs);
       } else {
         if (DEBUG_ANIM) logAnim('[anim]', id, 'flyCard', { style, delay, dx, dy, primary });
-        anim = flyCard(elm, dx, dy, style, delay, primary);
+        anim = flyCard(elm, dx, dy, style, delay, primary, isSweptCapture);
       }
       if (primary || willCapture(elm)) primaryAnims.push(anim);
     });
@@ -1186,7 +1233,7 @@ function reserveAudioSlot(estimatedDurationMs) {
 }
 
 function cardSlap(delay = 0) {
-  const gate = reserveAudioSlot(280);
+  const gate = reserveAudioSlot(Math.max(sfxDurationOf('card-slap-real.mp3'), 120));
   playSfx('card-slap-real.mp3', { volume: 1, rate: 0.95, delay: delay + gate });
   beep(90, 0.12, { type: 'sine', gain: 0.24, delay: delay + gate });
 }
@@ -1198,9 +1245,32 @@ function cardSlap(delay = 0) {
 // 예외 두 가지: shake(흔들기)는 새로 날아오는 카드가 없는 행동이라 착지음 자체가 아예
 // 안 나므로 수동으로 3연타를 흉내내고, bomb(폭탄)은 손패 3장이 handCardIds로 시차를
 // 두고 착지하면서 이미 자연스럽게 "탁.. 탁.. 탁"이 울리므로 저음 강조만 더한다.
+// reserveAudioSlot에 넘길 "이번 사운드 묶음이 몇 ms 동안 자리를 차지하는지"를 손으로
+// 어림잡아 적었더니 (예: capture 650ms로 잡음) 실제 파일 길이를 재보니 여러 항목이
+// 그보다 더 길었다(capture의 실제 체감 길이는 delay 0.15s + match-success.mp3 실측
+// 493ms = 643ms로 거의 맞았지만, jjok/ttadak/win/bonus는 최대 80ms 가까이 더 길어서
+// 그 차이만큼 다음 사건이 아직 안 끝난 소리 위에 계속 겹쳐 울리고 있었다). 그래서
+// 각 파일을 로드하자마자 실제 재생 길이(loadedmetadata의 duration)를 재서 정확한
+// ms 수치로 게이트를 예약하도록 바꿨다 - 파일이 바뀌어도 추정치가 낡아버릴 일이 없다.
+const sfxDurationMs = {};
+const FALLBACK_SFX_DUR_MS = 900; // 아직 길이를 못 읽은(로딩 중인) 초반 한두 사건용 안전한 기본값
+function sfxDurationOf(file) {
+  return sfxDurationMs[file] || FALLBACK_SFX_DUR_MS;
+}
+['card-slap-real.mp3', 'capture-check.mp3', 'match-success.mp3', 'ppeok.mp3', 'ppeok-resolved.mp3',
+  'ttadak.mp3', 'sweep.mp3', 'go.mp3', 'win.mp3', 'bonus-reveal.mp3', 'ui-click.mp3'].forEach((file) => {
+  const probe = new Audio(`assets/audio/${file}`);
+  probe.addEventListener('loadedmetadata', () => { sfxDurationMs[file] = probe.duration * 1000; });
+});
+// 사운드 묶음(파일, 그 안에서의 delay 초) 목록을 받아 "그 묶음이 실제로 다 끝나는 시각
+// (ms)"을 계산한다 - reserveAudioSlot에 그대로 넘기면 된다.
+function soundGroupDurationMs(...parts) {
+  return Math.max(...parts.map(([file, delaySec]) => delaySec * 1000 + sfxDurationOf(file)));
+}
+
 // 각 항목은 재생 직전에 reserveAudioSlot(estimatedMs)로 "이번 사건의 사운드 묶음이
-// 대략 몇 ms 동안 자리를 차지할지" 예약하고 돌려받은 gate(초 단위)를, 이 묶음 안 모든
-// playSfx/beep 호출의 delay에 똑같이 더한다 - 묶음 전체가 통째로 뒤로 밀릴 뿐 묶음
+// 실제로 몇 ms 동안 자리를 차지하는지"를 예약하고 돌려받은 gate(초 단위)를, 이 묶음 안
+// 모든 playSfx/beep 호출의 delay에 똑같이 더한다 - 묶음 전체가 통째로 뒤로 밀릴 뿐 묶음
 // 내부의 상대적 타이밍(예: capture의 체크음 0.06초 뒤 챠임 0.15초)은 그대로 유지된다.
 // shake만 예외로 그 안에서 cardSlap()을 직접 부르는데, cardSlap 자신이 이미 매번
 // 게이트를 거니 여기서 또 걸 필요가 없다.
@@ -1211,37 +1281,53 @@ const SOUND = {
   place: () => {},
   // 카드 짝 맞추기: "찰칵(체크) + 성공 챠임"을 겹쳐서 짝이 맞았다는 게 확실히 들리도록 한다
   capture: () => {
-    const gate = reserveAudioSlot(650);
+    const gate = reserveAudioSlot(soundGroupDurationMs(['capture-check.mp3', 0.06], ['match-success.mp3', 0.15]));
     playSfx('capture-check.mp3', { volume: 0.5, delay: 0.06 + gate });
     playSfx('match-success.mp3', { volume: 0.5, delay: 0.15 + gate });
   },
   jjok: () => {
-    const gate = reserveAudioSlot(600);
+    const gate = reserveAudioSlot(soundGroupDurationMs(['ui-click.mp3', 0.07], ['match-success.mp3', 0.16]));
     playSfx('ui-click.mp3', { volume: 0.55, delay: 0.07 + gate });
     playSfx('match-success.mp3', { volume: 0.55, delay: 0.16 + gate });
   },
-  ppeok: () => { const gate = reserveAudioSlot(550); playSfx('ppeok.mp3', { volume: 0.65, delay: 0.03 + gate }); },
+  ppeok: () => {
+    const gate = reserveAudioSlot(soundGroupDurationMs(['ppeok.mp3', 0.03]));
+    playSfx('ppeok.mp3', { volume: 0.65, delay: 0.03 + gate });
+  },
   // 뻑 해소: 쌓여서 잠겨있던 패 더미가 "풀리는" 느낌으로 뻑 성립과는 다른 소리를 쓴다
   ppeokResolved: () => {
-    const gate = reserveAudioSlot(680);
+    const gate = reserveAudioSlot(soundGroupDurationMs(['ppeok-resolved.mp3', 0.03], ['match-success.mp3', 0.18]));
     playSfx('ppeok-resolved.mp3', { volume: 0.7, delay: 0.03 + gate });
     playSfx('match-success.mp3', { volume: 0.5, delay: 0.18 + gate });
   },
   ttadak: () => {
-    const gate = reserveAudioSlot(650);
+    const gate = reserveAudioSlot(soundGroupDurationMs(['ttadak.mp3', 0.02], ['match-success.mp3', 0.2]));
     playSfx('ttadak.mp3', { volume: 0.6, delay: 0.02 + gate });
     playSfx('match-success.mp3', { volume: 0.55, delay: 0.2 + gate });
   },
-  sweep: () => { const gate = reserveAudioSlot(700); playSfx('sweep.mp3', { volume: 0.75, delay: 0.06 + gate }); },
+  sweep: () => {
+    const gate = reserveAudioSlot(soundGroupDurationMs(['sweep.mp3', 0.06]));
+    playSfx('sweep.mp3', { volume: 0.75, delay: 0.06 + gate });
+  },
   // 손패 3장이 handCardIds 순서대로 시차(0/70/140ms)를 두고 착지하면서 각자 cardSlap을
   // 직접 재생하므로, 여기서는 그 위에 겹쳐 울릴 낮고 묵직한 "쿵" 강조음만 더한다
-  // (마지막 카드가 착지하는 시점 근처에 맞춘 지연).
-  bomb: () => { const gate = reserveAudioSlot(500); beep(80, 0.35, { type: 'square', gain: 0.22, delay: 0.15 + gate }); },
+  // (마지막 카드가 착지하는 시점 근처에 맞춘 지연). beep은 길이를 정확히 알고 만드므로
+  // 실측 없이 350ms(0.35s) 그대로 쓴다.
+  bomb: () => { const gate = reserveAudioSlot(150 + 350); beep(80, 0.35, { type: 'square', gain: 0.22, delay: 0.15 + gate }); },
   shake: () => { [0, 0.09, 0.18].forEach((d) => cardSlap(d)); },
-  go: () => { const gate = reserveAudioSlot(900); playSfx('go.mp3', { volume: 0.7, delay: gate }); },
-  win: () => { const gate = reserveAudioSlot(900); playSfx('win.mp3', { volume: 0.8, delay: gate }); },
+  go: () => {
+    const gate = reserveAudioSlot(soundGroupDurationMs(['go.mp3', 0]));
+    playSfx('go.mp3', { volume: 0.7, delay: gate });
+  },
+  win: () => {
+    const gate = reserveAudioSlot(soundGroupDurationMs(['win.mp3', 0]));
+    playSfx('win.mp3', { volume: 0.8, delay: gate });
+  },
   // 보너스패: "예상치 못한 추가 보상"에 정확히 맞는 전용 효과음으로 교체
-  bonus: () => { const gate = reserveAudioSlot(550); playSfx('bonus-reveal.mp3', { volume: 0.75, delay: 0.06 + gate }); },
+  bonus: () => {
+    const gate = reserveAudioSlot(soundGroupDurationMs(['bonus-reveal.mp3', 0.06]));
+    playSfx('bonus-reveal.mp3', { volume: 0.75, delay: 0.06 + gate });
+  },
 };
 
 // 버튼 클릭마다 가벼운 UI 클릭음을 더해 조작감을 살린다 (게임 이벤트 효과음과는 별도)
