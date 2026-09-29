@@ -1268,6 +1268,21 @@ function soundGroupDurationMs(...parts) {
   return Math.max(...parts.map(([file, delaySec]) => delaySec * 1000 + sfxDurationOf(file)));
 }
 
+const COMBO_GAP_MS = 60; // 한 사건 안에서 소리 두 개를 겹치지 않고 순서대로 이어붙일 때의 짧은 틈
+
+// 짝 맞추기 계열(capture/jjok/ppeokResolved/ttadak)은 "체크음 -> 성공 챠임"처럼 소리
+// 두 개를 잇는다. 예전엔 "0.06초 뒤, 0.15초 뒤"처럼 두 소리의 시작 시각을 손으로 고정해서
+// 일부러 살짝 겹치게(콤보처럼 들리라고) 해뒀는데, 첫 소리가 그보다 실제로 더 길게
+// 재생되는 경우(실측상 흔함 - 예: capture-check.mp3는 234ms인데 두 번째 소리는 150ms
+// 뒤에 시작했다)까지 겹치면서 "카드 한 장 한 장이 각자 소리를 내는 것처럼" 들렸다.
+// 이제는 첫 소리의 실제 길이(sfxDurationOf)를 재서, 그게 다 끝난 뒤로만 두 번째 소리를
+// 이어 붙인다 - 완전히 순차적이라 절대 안 겹친다.
+function sequentialDelays(firstFile, firstDelaySec, secondFile) {
+  const secondDelaySec = firstDelaySec + (sfxDurationOf(firstFile) + COMBO_GAP_MS) / 1000;
+  const totalMs = secondDelaySec * 1000 + sfxDurationOf(secondFile);
+  return { firstDelaySec, secondDelaySec, totalMs };
+}
+
 // 각 항목은 재생 직전에 reserveAudioSlot(estimatedMs)로 "이번 사건의 사운드 묶음이
 // 실제로 몇 ms 동안 자리를 차지하는지"를 예약하고 돌려받은 gate(초 단위)를, 이 묶음 안
 // 모든 playSfx/beep 호출의 delay에 똑같이 더한다 - 묶음 전체가 통째로 뒤로 밀릴 뿐 묶음
@@ -1281,14 +1296,16 @@ const SOUND = {
   place: () => {},
   // 카드 짝 맞추기: "찰칵(체크) + 성공 챠임"을 겹쳐서 짝이 맞았다는 게 확실히 들리도록 한다
   capture: () => {
-    const gate = reserveAudioSlot(soundGroupDurationMs(['capture-check.mp3', 0.06], ['match-success.mp3', 0.15]));
-    playSfx('capture-check.mp3', { volume: 0.5, delay: 0.06 + gate });
-    playSfx('match-success.mp3', { volume: 0.5, delay: 0.15 + gate });
+    const { firstDelaySec, secondDelaySec, totalMs } = sequentialDelays('capture-check.mp3', 0.06, 'match-success.mp3');
+    const gate = reserveAudioSlot(totalMs);
+    playSfx('capture-check.mp3', { volume: 0.5, delay: firstDelaySec + gate });
+    playSfx('match-success.mp3', { volume: 0.5, delay: secondDelaySec + gate });
   },
   jjok: () => {
-    const gate = reserveAudioSlot(soundGroupDurationMs(['ui-click.mp3', 0.07], ['match-success.mp3', 0.16]));
-    playSfx('ui-click.mp3', { volume: 0.55, delay: 0.07 + gate });
-    playSfx('match-success.mp3', { volume: 0.55, delay: 0.16 + gate });
+    const { firstDelaySec, secondDelaySec, totalMs } = sequentialDelays('ui-click.mp3', 0.07, 'match-success.mp3');
+    const gate = reserveAudioSlot(totalMs);
+    playSfx('ui-click.mp3', { volume: 0.55, delay: firstDelaySec + gate });
+    playSfx('match-success.mp3', { volume: 0.55, delay: secondDelaySec + gate });
   },
   ppeok: () => {
     const gate = reserveAudioSlot(soundGroupDurationMs(['ppeok.mp3', 0.03]));
@@ -1296,14 +1313,16 @@ const SOUND = {
   },
   // 뻑 해소: 쌓여서 잠겨있던 패 더미가 "풀리는" 느낌으로 뻑 성립과는 다른 소리를 쓴다
   ppeokResolved: () => {
-    const gate = reserveAudioSlot(soundGroupDurationMs(['ppeok-resolved.mp3', 0.03], ['match-success.mp3', 0.18]));
-    playSfx('ppeok-resolved.mp3', { volume: 0.7, delay: 0.03 + gate });
-    playSfx('match-success.mp3', { volume: 0.5, delay: 0.18 + gate });
+    const { firstDelaySec, secondDelaySec, totalMs } = sequentialDelays('ppeok-resolved.mp3', 0.03, 'match-success.mp3');
+    const gate = reserveAudioSlot(totalMs);
+    playSfx('ppeok-resolved.mp3', { volume: 0.7, delay: firstDelaySec + gate });
+    playSfx('match-success.mp3', { volume: 0.5, delay: secondDelaySec + gate });
   },
   ttadak: () => {
-    const gate = reserveAudioSlot(soundGroupDurationMs(['ttadak.mp3', 0.02], ['match-success.mp3', 0.2]));
-    playSfx('ttadak.mp3', { volume: 0.6, delay: 0.02 + gate });
-    playSfx('match-success.mp3', { volume: 0.55, delay: 0.2 + gate });
+    const { firstDelaySec, secondDelaySec, totalMs } = sequentialDelays('ttadak.mp3', 0.02, 'match-success.mp3');
+    const gate = reserveAudioSlot(totalMs);
+    playSfx('ttadak.mp3', { volume: 0.6, delay: firstDelaySec + gate });
+    playSfx('match-success.mp3', { volume: 0.55, delay: secondDelaySec + gate });
   },
   sweep: () => {
     const gate = reserveAudioSlot(soundGroupDurationMs(['sweep.mp3', 0.06]));
