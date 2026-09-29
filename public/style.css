@@ -85,7 +85,17 @@ button:active { transform: translateY(1px) scale(0.98); box-shadow: 0 1px 3px rg
 .opponent-card {
   background: linear-gradient(160deg, rgba(255,255,255,0.06), rgba(0,0,0,0.22));
   border: 1px solid rgba(255,255,255,0.08);
-  border-radius: 12px; padding: 10px 12px; min-width: 260px; max-width: 360px;
+  border-radius: 12px; padding: 10px 12px;
+  /* 이전엔 min/max-width 범위(260~360px)라 손패 수나 먹은패 구성이 바뀔 때마다 박스
+     너비 자체가 변했다 - .opponents가 justify-content:center라 박스 너비가 변하면
+     그 박스 자체가 좌우로 밀리면서 안에 든 카드(손패 뒷면 + 먹은패)까지, 이번 턴과
+     전혀 무관한 상대의 카드까지 전부 함께 밀려버렸다("맞는 카드끼리 동시에 정리되는
+     느낌이 안 든다"던 증상의 한 축 - 실제 캡처 애니메이션과 똑같은 순간에 이 무관한
+     카드들도 우르르 움직이면서 화면이 산만해졌다). 너비를 고정해서 내용이 바뀌어도
+     박스 자체는 절대 움직이지 않게 한다 - 넘치는 손패는 opp-hand-row가 이미
+     flex-wrap으로, 넘치는 먹은패는 cap-groups.mini가 이미 overflow-x:auto로 각자
+     알아서 처리한다. */
+  width: 320px;
   font-size: 0.95em; transition: outline-color 0.2s, background 0.2s, box-shadow 0.2s;
 }
 .opponent-card.current-turn {

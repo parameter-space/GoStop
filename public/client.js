@@ -252,44 +252,61 @@ function cachedCardEl(c, opts) {
 // cachedCardEl만으로는 부족했다 - 카드 엘리먼트 자체는 재사용해도 그걸 담는 그릇(cap-groups/
 // cap-group/cap-cards)은 매 렌더마다 새로 만들어서 수십 개 엘리먼트를 새 부모에 다시
 // appendChild하고 있었는데, 이 트리 구조 변경 자체가 브라우저 레이아웃 재계산을 강제해서
-// 실측상 별 차이가 없었다. cacheKey(누구의 먹은패인지)별로 "이번에 들어온 카드 구성이 지난
-// 렌더와 완전히 같으면" 통짜 wrap 엘리먼트를 그대로 재사용해서, 바뀐 게 없는 대다수 턴에는
-// 이 함수가 사실상 공짜가 되게 한다.
+// 실측상 별 차이가 없었다.
+//
+// 처음엔 통짜 sig(광+열끗+띠+피 전체를 합친 문자열) 하나로만 "바뀐 게 있는지"를 봤는데,
+// 그러면 예를 들어 피 그룹에 한 장만 새로 들어와도 전체 sig가 달라져서 광/열끗/띠 그룹까지
+// 전부(그 안의 카드 엘리먼트까지) 새 부모로 다시 appendChild해버렸다 - 실측해보니 이게
+// 바로 "캡처 애니메이션이 벌어지는 바로 그 순간에, 방금 캡처와 전혀 무관한 이미 먹은
+// 패들까지 우르르 같이 움직이는" 현상의 진짜 원인이었다(그것도 상대방 먹은패뿐 아니라
+// 내 먹은패에서도 똑같이 일어났다 - opponent-card 박스 너비 변화 때문이 아니라 이 함수
+// 자체의 과잉 리빌드 때문이었다). 이제는 타입(광/열끗/띠/피)별로 각자의 sig를 따로 추적해서,
+// 실제로 그 타입에 변화가 있을 때만 그 타입의 그룹만(라벨+카드 다시 붙이기) 건드리고,
+// 나머지 세 타입의 그룹은 완전히 그대로 - 재부착조차 안 하고 - 둔다.
 const capturedGroupsCache = new Map();
 function capturedGroups(captured, { mini, interactive, cacheKey } = {}) {
-  const sig = ['gwang', 'yeolkkeut', 'tti', 'pi']
-    .map((t) => captured[t].map((c) => `${c.id}:${c.type}:${c.piValue || ''}`).join(','))
-    .join('|');
-  if (cacheKey) {
-    const cached = capturedGroupsCache.get(cacheKey);
-    if (cached && cached.sig === sig) return cached.wrap;
-  }
   const overlap = mini
     ? { gwang: -14, yeolkkeut: -16, tti: -16, pi: -18 }
     : { gwang: -32, yeolkkeut: -36, tti: -36, pi: -42 };
-  const wrap = document.createElement('div');
-  wrap.className = 'cap-groups' + (mini ? ' mini' : '');
-  ['gwang', 'yeolkkeut', 'tti', 'pi'].forEach((type) => {
+  const types = ['gwang', 'yeolkkeut', 'tti', 'pi'];
+
+  let cached = cacheKey && capturedGroupsCache.get(cacheKey);
+  if (!cached) {
+    const wrap = document.createElement('div');
+    wrap.className = 'cap-groups' + (mini ? ' mini' : '');
+    const groups = {};
+    types.forEach((type) => {
+      const group = document.createElement('div');
+      group.className = `cap-group cap-${type}`;
+      const label = document.createElement('span');
+      label.className = 'cap-label';
+      const cardsWrap = document.createElement('div');
+      cardsWrap.className = 'cap-cards';
+      group.appendChild(label);
+      group.appendChild(cardsWrap);
+      wrap.appendChild(group);
+      groups[type] = { group, label, cardsWrap, sig: null };
+    });
+    cached = { wrap, groups };
+    if (cacheKey) capturedGroupsCache.set(cacheKey, cached);
+  }
+
+  types.forEach((type) => {
     const cards = captured[type];
-    const group = document.createElement('div');
-    group.className = `cap-group cap-${type}`;
-    const label = document.createElement('span');
-    label.className = 'cap-label';
+    const sig = cards.map((c) => `${c.id}:${c.type}:${c.piValue || ''}`).join(',');
+    const g = cached.groups[type];
+    if (g.sig === sig) return; // 이 타입은 안 바뀌었으면 완전히 그대로 둔다
+    g.sig = sig;
     const count = type === 'pi' ? piValueOf(cards) : cards.length;
-    label.textContent = `${TYPE_LABEL[type]} ${count}`;
-    group.appendChild(label);
-    const cardsWrap = document.createElement('div');
-    cardsWrap.className = 'cap-cards';
+    g.label.textContent = `${TYPE_LABEL[type]} ${count}`;
+    g.cardsWrap.innerHTML = '';
     cards.forEach((c, i) => {
       const cel = cachedCardEl(c, { mini, onFlexToggle: interactive ? toggleFlex : null });
       if (i > 0) cel.style.marginLeft = overlap[type] + 'px';
-      cardsWrap.appendChild(cel);
+      g.cardsWrap.appendChild(cel);
     });
-    group.appendChild(cardsWrap);
-    wrap.appendChild(group);
   });
-  if (cacheKey) capturedGroupsCache.set(cacheKey, { sig, wrap });
-  return wrap;
+  return cached.wrap;
 }
 
 function toggleFlex(card) {
