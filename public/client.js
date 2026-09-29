@@ -1133,9 +1133,30 @@ function playSfx(file, { volume = 0.6, rate = 1, delay = 0 } = {}) {
 // 훨씬 정직하고 "카드답게" 들린다. 이제 이 함수가 실제로 낸/뒤집은/뽑은/폭탄 카드에만
 // (flyCard의 primaryMover) 불리므로, 캡처로 딸려가는 카드까지 겹쳐 울릴 걱정 없이 한
 // 턴에 한두 번만 또렷하게 재생된다.
+// 사운드가 서로 겹쳐서 "여러 사건이 동시에 일어난다"는 느낌을 주는 문제 - 턴은 서버가
+// 받는 대로 바로바로 진행되고(애니메이션이 다 끝나길 기다려주지 않음), 상대가 조금만
+// 빨리 두면 이전 턴의 타격음/확인음이 채 끝나기도 전에 다음 턴의 소리가 그 위에 겹쳐
+// 울렸다. 정확한 mp3 길이까지는 몰라도, 각 "사운드 묶음"(카드 착지음 한 번, 또는
+// 이벤트 확인음 한 세트)이 대략 얼마나 걸리는지 넉넉히 추정해두고, 그 추정 시각까지는
+// 다음 묶음이 시작하지 않도록 전역으로 순서를 매긴다. 묶음 "안"에서 의도적으로 살짝
+// 겹쳐 쌓는 효과(예: capture의 체크음+챠임 콤보)는 그대로 유지된다 - 이 게이트는 묶음
+// 전체를 한 번에 뒤로 미룰 뿐, 묶음 내부의 상대적 타이밍은 안 건드리기 때문이다.
+let audioBusyUntil = 0; // performance.now() 기준, 지금까지 예약된 사운드가 다 끝나는 시각
+const SOUND_GAP_MS = 90; // 사운드가 끝난 뒤 다음 사건까지 살짝 두는 틈
+
+// 사운드 묶음 하나를 재생하기 직전에 불러서, "지금 당장 재생해도 되는지 아니면 몇 ms
+// 더 기다려야 하는지"를 초 단위로 돌려주고, 그만큼 오디오 점유 구간을 늘려 예약해둔다.
+function reserveAudioSlot(estimatedDurationMs) {
+  const now = performance.now();
+  const extraDelayMs = Math.max(0, audioBusyUntil - now);
+  audioBusyUntil = now + extraDelayMs + estimatedDurationMs + SOUND_GAP_MS;
+  return extraDelayMs / 1000;
+}
+
 function cardSlap(delay = 0) {
-  playSfx('card-slap-real.mp3', { volume: 1, rate: 0.95, delay });
-  beep(90, 0.12, { type: 'sine', gain: 0.24, delay });
+  const gate = reserveAudioSlot(280);
+  playSfx('card-slap-real.mp3', { volume: 1, rate: 0.95, delay: delay + gate });
+  beep(90, 0.12, { type: 'sine', gain: 0.24, delay: delay + gate });
 }
 
 // 카드 착지 타격음(cardSlap)은 flyCard의 anim.onfinish에서 이번 턴의 실제 행위자 카드에만
@@ -1145,6 +1166,12 @@ function cardSlap(delay = 0) {
 // 예외 두 가지: shake(흔들기)는 새로 날아오는 카드가 없는 행동이라 착지음 자체가 아예
 // 안 나므로 수동으로 3연타를 흉내내고, bomb(폭탄)은 손패 3장이 handCardIds로 시차를
 // 두고 착지하면서 이미 자연스럽게 "탁.. 탁.. 탁"이 울리므로 저음 강조만 더한다.
+// 각 항목은 재생 직전에 reserveAudioSlot(estimatedMs)로 "이번 사건의 사운드 묶음이
+// 대략 몇 ms 동안 자리를 차지할지" 예약하고 돌려받은 gate(초 단위)를, 이 묶음 안 모든
+// playSfx/beep 호출의 delay에 똑같이 더한다 - 묶음 전체가 통째로 뒤로 밀릴 뿐 묶음
+// 내부의 상대적 타이밍(예: capture의 체크음 0.06초 뒤 챠임 0.15초)은 그대로 유지된다.
+// shake만 예외로 그 안에서 cardSlap()을 직접 부르는데, cardSlap 자신이 이미 매번
+// 게이트를 거니 여기서 또 걸 필요가 없다.
 const SOUND = {
   // 그냥 내려놓기(짝 없음): 착지 타격음(cardSlap)이 이제 매 착지마다 이미 재생되므로,
   // 여기서 card-drop.mp3를 또 얹으면 오히려 소리가 흐려진다. 이 이벤트만의 특별한 추가
@@ -1152,24 +1179,37 @@ const SOUND = {
   place: () => {},
   // 카드 짝 맞추기: "찰칵(체크) + 성공 챠임"을 겹쳐서 짝이 맞았다는 게 확실히 들리도록 한다
   capture: () => {
-    playSfx('capture-check.mp3', { volume: 0.5, delay: 0.06 });
-    playSfx('match-success.mp3', { volume: 0.5, delay: 0.15 });
+    const gate = reserveAudioSlot(650);
+    playSfx('capture-check.mp3', { volume: 0.5, delay: 0.06 + gate });
+    playSfx('match-success.mp3', { volume: 0.5, delay: 0.15 + gate });
   },
-  jjok: () => { playSfx('ui-click.mp3', { volume: 0.55, delay: 0.07 }); playSfx('match-success.mp3', { volume: 0.55, delay: 0.16 }); },
-  ppeok: () => { playSfx('ppeok.mp3', { volume: 0.65, delay: 0.03 }); },
+  jjok: () => {
+    const gate = reserveAudioSlot(600);
+    playSfx('ui-click.mp3', { volume: 0.55, delay: 0.07 + gate });
+    playSfx('match-success.mp3', { volume: 0.55, delay: 0.16 + gate });
+  },
+  ppeok: () => { const gate = reserveAudioSlot(550); playSfx('ppeok.mp3', { volume: 0.65, delay: 0.03 + gate }); },
   // 뻑 해소: 쌓여서 잠겨있던 패 더미가 "풀리는" 느낌으로 뻑 성립과는 다른 소리를 쓴다
-  ppeokResolved: () => { playSfx('ppeok-resolved.mp3', { volume: 0.7, delay: 0.03 }); playSfx('match-success.mp3', { volume: 0.5, delay: 0.18 }); },
-  ttadak: () => { playSfx('ttadak.mp3', { volume: 0.6, delay: 0.02 }); playSfx('match-success.mp3', { volume: 0.55, delay: 0.2 }); },
-  sweep: () => { playSfx('sweep.mp3', { volume: 0.75, delay: 0.06 }); },
+  ppeokResolved: () => {
+    const gate = reserveAudioSlot(680);
+    playSfx('ppeok-resolved.mp3', { volume: 0.7, delay: 0.03 + gate });
+    playSfx('match-success.mp3', { volume: 0.5, delay: 0.18 + gate });
+  },
+  ttadak: () => {
+    const gate = reserveAudioSlot(650);
+    playSfx('ttadak.mp3', { volume: 0.6, delay: 0.02 + gate });
+    playSfx('match-success.mp3', { volume: 0.55, delay: 0.2 + gate });
+  },
+  sweep: () => { const gate = reserveAudioSlot(700); playSfx('sweep.mp3', { volume: 0.75, delay: 0.06 + gate }); },
   // 손패 3장이 handCardIds 순서대로 시차(0/70/140ms)를 두고 착지하면서 각자 cardSlap을
   // 직접 재생하므로, 여기서는 그 위에 겹쳐 울릴 낮고 묵직한 "쿵" 강조음만 더한다
   // (마지막 카드가 착지하는 시점 근처에 맞춘 지연).
-  bomb: () => { beep(80, 0.35, { type: 'square', gain: 0.22, delay: 0.15 }); },
+  bomb: () => { const gate = reserveAudioSlot(500); beep(80, 0.35, { type: 'square', gain: 0.22, delay: 0.15 + gate }); },
   shake: () => { [0, 0.09, 0.18].forEach((d) => cardSlap(d)); },
-  go: () => playSfx('go.mp3', { volume: 0.7 }),
-  win: () => playSfx('win.mp3', { volume: 0.8 }),
+  go: () => { const gate = reserveAudioSlot(900); playSfx('go.mp3', { volume: 0.7, delay: gate }); },
+  win: () => { const gate = reserveAudioSlot(900); playSfx('win.mp3', { volume: 0.8, delay: gate }); },
   // 보너스패: "예상치 못한 추가 보상"에 정확히 맞는 전용 효과음으로 교체
-  bonus: () => { playSfx('bonus-reveal.mp3', { volume: 0.75, delay: 0.06 }); },
+  bonus: () => { const gate = reserveAudioSlot(550); playSfx('bonus-reveal.mp3', { volume: 0.75, delay: 0.06 + gate }); },
 };
 
 // 버튼 클릭마다 가벼운 UI 클릭음을 더해 조작감을 살린다 (게임 이벤트 효과음과는 별도)
