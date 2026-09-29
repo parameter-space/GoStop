@@ -8,8 +8,110 @@ let lastSeenEventSeq = 0;
 let eventSeqInitialized = false;
 
 const el = (id) => document.getElementById(id);
+
+// 날아다니는 카드들끼리 화면에서 겹칠 때 어느 게 위에 보일지 정하는 값. "몇 ms 뒤에 출발할
+// 예정인지"(delay) 값 자체로 z-index를 매겼더니(예전 시도), 아직 실제로는 움직이지 않고
+// 원래 자리에 가만히 대기 중인 카드(delay가 커서 나중 페이즈에 출발 예정)가, 그 사이 먼저
+// 진짜로 날아가고 있는 카드보다 더 높은 값을 갖게 되는 역전이 생겼다(예: 손패 카드와 함께
+// 캡처되는 바닥 카드는 대기 시간이 제일 길어서, 아직 가만히 있을 뿐인데 한창 날아가는 중인
+// 덱 카드보다 z-index가 높아져 그 위를 덮어버림). 그래서 "얼마나 나중에 출발하는지"가 아니라
+// "실제로 지금 막 움직이기 시작했는지"를 기준으로 삼는다 - 카드가 진짜로 움직이기 시작하는
+// 바로 그 순간에만 이 카운터를 하나씩 올려 받아쓰면, 실제 시간 순서대로 항상 최근에 움직인
+// 카드가 위에 보인다.
+let nextFlightZIndex = 100;
+
+// 카드 이동 애니메이션이 실제 재생 환경(사용자 브라우저)에서 어떻게 동작하는지 원격으로
+// 진단하기 위한 스위치. 브라우저 콘솔에서 localStorage.debugAnim='1' 설정 후 새로고침하면
+// 매 렌더마다 어떤 카드가 어디서 왔다고 판단됐는지(dx/dy/style/delay)를 콘솔에 남긴다.
+const DEBUG_ANIM = (() => {
+  try { return localStorage.getItem('debugAnim') === '1'; } catch (e) { return false; }
+})();
+// 콘솔에 쌓인 로그를 한 줄씩 手동으로 긁어 복사하기 번거로우니, window.__animLog에도 같이
+// 모아둔다. 콘솔에서 copy(__animLog.join('\n')) 한 번이면 지금까지 쌓인 전부가 클립보드로
+// 복사된다.
+window.__animLog = [];
+function logAnim(...args) {
+  const line = args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
+  window.__animLog.push(line);
+  console.log(line);
+}
+
+// 플레이어 닉네임은 사용자가 자유롭게 입력한 문자열이라, 그걸 그대로 innerHTML 템플릿에
+// 끼워넣으면 다른 사람 화면에서 그대로 스크립트로 실행될 수 있다(예: 이름을
+// "<img src=x onerror=...>"로 설정). innerHTML에 넣기 전에는 항상 이 함수로 이스케이프한다.
+function escapeHtml(str) {
+  return String(str ?? '').replace(/[&<>"']/g, (ch) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[ch]));
+}
 const show = (id) => el(id).classList.remove('hidden');
 const hide = (id) => el(id).classList.add('hidden');
+
+// --- 모달 접근성: 포커스 트랩 / ESC 닫기 / 포커스 복원 ---------------------------------
+// modal-choice/modal-gostop/modal-result는 렌더가 다시 돌 때마다(다른 플레이어의 행동으로
+// 상태가 갱신될 때마다) show/hide가 반복 호출된다. 이미 열려/닫혀 있는데 또 열고/닫는
+// 취급을 하면 그때마다 포커스를 빼앗아가서 키보드로 탐색 중인 사용자를 방해하게 되므로,
+// 실제로 감춤<->표시 상태가 "전환"될 때만 포커스를 옮기고 복원한다.
+let lastFocusedBeforeModal = null;
+
+// ESC로 닫을 수 있는 모달만 등록한다. modal-choice/modal-gostop/modal-result는 사용자가
+// 반드시 응답해야 하는 강제 선택지라서 ESC로 그냥 닫아버리면 안 된다.
+const MODAL_CANCEL_BUTTON = {
+  'modal-rules': 'rules-close',
+  'modal-shake': 'shake-cancel',
+  'modal-bomb': 'bomb-cancel',
+};
+
+function focusablesIn(container) {
+  return Array.from(container.querySelectorAll(
+    'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+  )).filter((elm) => !elm.disabled && elm.offsetParent !== null);
+}
+
+function showModal(id) {
+  const modal = el(id);
+  if (!modal.classList.contains('hidden')) return; // 이미 열려 있으면 포커스를 다시 빼앗지 않음
+  lastFocusedBeforeModal = document.activeElement;
+  modal.classList.remove('hidden');
+  const box = modal.querySelector('.modal-box');
+  const target = focusablesIn(modal)[0] || box;
+  if (box && !box.hasAttribute('tabindex')) box.setAttribute('tabindex', '-1');
+  if (target) target.focus();
+}
+
+function hideModal(id) {
+  const modal = el(id);
+  if (modal.classList.contains('hidden')) return; // 이미 닫혀 있으면 포커스를 복원할 필요 없음
+  modal.classList.add('hidden');
+  if (lastFocusedBeforeModal && document.body.contains(lastFocusedBeforeModal)
+    && typeof lastFocusedBeforeModal.focus === 'function') {
+    lastFocusedBeforeModal.focus();
+  }
+  lastFocusedBeforeModal = null;
+}
+
+document.addEventListener('keydown', (e) => {
+  const openModal = document.querySelector('.modal:not(.hidden)');
+  if (!openModal) return;
+  if (e.key === 'Escape') {
+    const cancelId = MODAL_CANCEL_BUTTON[openModal.id];
+    if (cancelId) { e.preventDefault(); el(cancelId).click(); }
+    return;
+  }
+  if (e.key !== 'Tab') return;
+  // 모달이 열려 있는 동안은 Tab이 모달 밖(뒤에 깔린 게임판)으로 빠져나가지 않게 가둔다.
+  const focusables = focusablesIn(openModal);
+  if (!focusables.length) return;
+  const first = focusables[0];
+  const last = focusables[focusables.length - 1];
+  if (e.shiftKey && document.activeElement === first) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && document.activeElement === last) {
+    e.preventDefault();
+    first.focus();
+  }
+});
 
 function ribbonClass(card) {
   if (card.type !== 'tti') return '';
@@ -19,14 +121,37 @@ function ribbonClass(card) {
   return '';
 }
 
-const TYPE_BADGE = { gwang: '光', yeolkkeut: '열끗', tti: '띠', pi: '피' };
+const TYPE_BADGE = { gwang: '光', yeolkkeut: '열끗', tti: '띠', pi: '피', bonus: '보너스' };
+
+// 손패를 월 순으로 정렬해서 찾기 쉽게 한다. 월이 없는 보너스패는 맨 뒤로.
+// 같은 월 안에서는 광 > 열끗 > 띠 > 피 순으로 둬서 눈에 잘 들어오게 정리한다.
+const HAND_TYPE_ORDER = { gwang: 0, yeolkkeut: 1, tti: 2, pi: 3 };
+function sortedHand(cards) {
+  return [...cards].sort((a, b) => {
+    if (a.month == null && b.month == null) return 0;
+    if (a.month == null) return 1;
+    if (b.month == null) return -1;
+    if (a.month !== b.month) return a.month - b.month;
+    return (HAND_TYPE_ORDER[a.type] ?? 9) - (HAND_TYPE_ORDER[b.type] ?? 9);
+  });
+}
 
 // 새로 나타난 카드에 등장 애니메이션을 주기 위해 이전에 본 카드 id들을 기억
 const seenCardIds = new Set();
 
 // 실제 화투 카드 그림 (48장 전부). 출처: Louie Mantia, Wikipedia "Sakura (card game)" 문서,
 // CC BY-SA 4.0 라이선스 (https://creativecommons.org/licenses/by-sa/4.0/). public/assets/cards/*.webp
-function cardEl(card, { onClick, selected, mini } = {}) {
+// 보너스패 2장은 실제 상품 이미지가 없어서 자체 디자인(별 무늬 + 텍스트)으로 그린다.
+// 카드 한 장을 스크린 리더 등에서 알아들을 수 있는 짧은 설명으로 바꾼다.
+// (카드가 전부 div로 그려져 있어서, 이 라벨이 없으면 보조기술 사용자에게는 빈 사각형일 뿐이다)
+function cardAriaLabel(card) {
+  if (card.type === 'bonus') return '보너스패 (쌍피)';
+  // card.name은 deck.js에서 이미 "1월 피"/"송학(광)"처럼 월+종류를 알아볼 수 있게 지어져
+  // 있어서 그대로 쓰면 충분하다(월/타입을 따로 덧붙이면 "1월 피 1월 피"처럼 겹쳐서 읽힘).
+  return card.name || `${card.month}월 ${TYPE_BADGE[card.type] || ''}`.trim();
+}
+
+function cardEl(card, { onClick, selected, mini, onFlexToggle } = {}) {
   const div = document.createElement('div');
   div.className = `card ${card.type} ${ribbonClass(card)}${mini ? ' mini' : ''}`;
   if (card.piValue === 2) div.classList.add('double');
@@ -36,12 +161,57 @@ function cardEl(card, { onClick, selected, mini } = {}) {
   if (!seenCardIds.has(seenKey)) div.classList.add('pop');
   seenCardIds.add(seenKey);
   div.dataset.id = card.id;
-  div.innerHTML = `
-    <img class="art-img" src="assets/cards/${card.id}.webp" alt="${card.month}월 ${TYPE_BADGE[card.type] || ''}" draggable="false" />
-    <div class="badge badge-type">${TYPE_BADGE[card.type] || ''}</div>
-    <div class="badge badge-month">${card.month}월</div>
-  `;
-  if (onClick) div.addEventListener('click', () => onClick(card));
+  div.setAttribute('aria-label', cardAriaLabel(card));
+
+  if (card.type === 'bonus') {
+    div.innerHTML = `
+      <div class="bonus-face">
+        <div class="bonus-medallion">
+          <svg class="bonus-emblem" viewBox="0 0 100 100" aria-hidden="true">
+            <polygon points="50,4 61,35 94,35 67,55 78,87 50,67 22,87 33,55 6,35 39,35" />
+            <circle cx="50" cy="50" r="14" class="bonus-emblem-core" />
+          </svg>
+        </div>
+        <div class="bonus-text">보너스</div>
+        <div class="bonus-sub">쌍피</div>
+      </div>
+    `;
+  } else {
+    div.innerHTML = `
+      <img class="art-img" src="assets/cards/${card.id}.webp" alt="${card.month}월 ${TYPE_BADGE[card.type] || ''}" draggable="false" />
+      <div class="badge badge-type">${TYPE_BADGE[card.type] || ''}</div>
+      <div class="badge badge-month">${card.month}월</div>
+    `;
+  }
+
+  // 9월 국화(열끗) 카드: 열끗<->쌍피 전환 버튼 (자기 창고에 있을 때만 onFlexToggle이 전달됨)
+  if (card.flexCard && onFlexToggle) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'flex-toggle';
+    btn.textContent = card.type === 'pi' ? '열끗으로' : '쌍피로';
+    btn.title = '국화(열끗)는 쌍피로도 계산할 수 있어요. 언제든 전환 가능';
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      onFlexToggle(card);
+    });
+    div.appendChild(btn);
+  }
+
+  // 지금까지는 클릭 가능한 카드가 전부 div라서 마우스로만 조작할 수 있었다. role/tabindex를
+  // 주고 Enter·Space로도 onClick이 똑같이 걸리게 해서, 키보드만 쓰는 사용자도 카드를 낼 수
+  // 있게 한다(스크린 리더가 이 요소를 "버튼"으로 읽어주는 효과도 있음).
+  if (onClick) {
+    div.setAttribute('role', 'button');
+    div.tabIndex = 0;
+    div.addEventListener('click', () => onClick(card));
+    div.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        onClick(card);
+      }
+    });
+  }
   return div;
 }
 
@@ -54,12 +224,46 @@ function cardBackEl(mini) {
 // ---------- 먹은 패 정리 (실제 고스톱처럼 광/열끗/띠/피로 줄 맞춰 정리, 피는 겹쳐서 부채꼴로) ----------
 const TYPE_LABEL = { gwang: '광', yeolkkeut: '열끗', tti: '띠', pi: '피' };
 
+// 먹은패 카드는 한 번 자리잡으면(9월 국화를 열끗<->쌍피로 전환하는 아주 드문 경우 말고는)
+// 다시 만들 필요가 없는데, 지금까지는 매 렌더마다 광/열끗/띠/피 전부를 통째로 다시 만들고
+// 있었다. 이 더미는 게임이 길어질수록 계속 쌓이기만 하는데, 실측해보니(카드 100장 기준)
+// renderGame 한 번에 8~16ms까지 걸렸다(빈 더미의 8~16배) - 매 턴 새로 낸 카드 한두 장
+// 때문에 이미 자리잡은 수십 장까지 전부 다시 만드는 건 순전한 낭비이고, 게임이 길어질수록
+// (실제로 "찰짐"을 느끼려고 몇 판 계속 플레이해볼 때) 누적되어 매 턴 버벅이는 원인이 된다.
+// id+type+피값+mini/interactive 조합이 그대로면 이미 만들어둔 DOM을 그대로 재사용한다
+// (엘리먼트를 다른 부모에 append하면 원래 있던 자리에서는 자동으로 빠지므로 안전하다).
+const capturedCardCache = new Map();
+function cachedCardEl(c, opts) {
+  const key = `${c.id}:${c.type}:${c.piValue || ''}:${opts.mini ? 1 : 0}:${opts.interactive ? 1 : 0}`;
+  let cel = capturedCardCache.get(key);
+  if (!cel) {
+    cel = cardEl(c, opts);
+    capturedCardCache.set(key, cel);
+  }
+  return cel;
+}
+
 // 실제 고스톱에서 먹은 패를 정리하는 방식: 광/열끗/띠/피 종류별로 줄을 나누고,
 // 각 줄 안에서는 카드를 겹쳐서(부채꼴처럼) 쌓아 자리를 아낀다 - 피처럼 많이 쌓이는 줄일수록 더 많이 겹친다.
 // 먹은 패 정리: 카드 자체는 세운 채로 두고(회전 없음), 광/열끗/띠/피 네 그룹을
 // 위아래로 쌓지 않고 왼쪽→오른쪽 한 줄로 나란히 배치한다(정렬 방향 = 가로).
 // 각 그룹 안에서도 카드들이 옆으로 겹쳐 쌓인다.
-function capturedGroups(captured, { mini } = {}) {
+//
+// cachedCardEl만으로는 부족했다 - 카드 엘리먼트 자체는 재사용해도 그걸 담는 그릇(cap-groups/
+// cap-group/cap-cards)은 매 렌더마다 새로 만들어서 수십 개 엘리먼트를 새 부모에 다시
+// appendChild하고 있었는데, 이 트리 구조 변경 자체가 브라우저 레이아웃 재계산을 강제해서
+// 실측상 별 차이가 없었다. cacheKey(누구의 먹은패인지)별로 "이번에 들어온 카드 구성이 지난
+// 렌더와 완전히 같으면" 통짜 wrap 엘리먼트를 그대로 재사용해서, 바뀐 게 없는 대다수 턴에는
+// 이 함수가 사실상 공짜가 되게 한다.
+const capturedGroupsCache = new Map();
+function capturedGroups(captured, { mini, interactive, cacheKey } = {}) {
+  const sig = ['gwang', 'yeolkkeut', 'tti', 'pi']
+    .map((t) => captured[t].map((c) => `${c.id}:${c.type}:${c.piValue || ''}`).join(','))
+    .join('|');
+  if (cacheKey) {
+    const cached = capturedGroupsCache.get(cacheKey);
+    if (cached && cached.sig === sig) return cached.wrap;
+  }
   const overlap = mini
     ? { gwang: -14, yeolkkeut: -16, tti: -16, pi: -18 }
     : { gwang: -32, yeolkkeut: -36, tti: -36, pi: -42 };
@@ -77,14 +281,21 @@ function capturedGroups(captured, { mini } = {}) {
     const cardsWrap = document.createElement('div');
     cardsWrap.className = 'cap-cards';
     cards.forEach((c, i) => {
-      const cel = cardEl(c, { mini });
+      const cel = cachedCardEl(c, { mini, onFlexToggle: interactive ? toggleFlex : null });
       if (i > 0) cel.style.marginLeft = overlap[type] + 'px';
       cardsWrap.appendChild(cel);
     });
     group.appendChild(cardsWrap);
     wrap.appendChild(group);
   });
+  if (cacheKey) capturedGroupsCache.set(cacheKey, { sig, wrap });
   return wrap;
+}
+
+function toggleFlex(card) {
+  socket.emit('game:toggleFlex', { cardId: card.id }, (res) => {
+    if (!res.ok) alert(res.error);
+  });
 }
 
 // ---------- FLIP 방식 이동 애니메이션 ----------
@@ -98,38 +309,725 @@ function captureCardRects() {
   return map;
 }
 
-function runFlipAnimation(oldRects, fallbackOriginRect) {
+// 이번 렌더 직전에 바닥(.floor)에 있던 카드 id들을 기록해둔다. "손패로 낸/덱에서 뒤집은
+// 카드가 바닥의 어느 카드와 맞춰졌는지"를 찾을 때(animateNewCards), 그냥 "지금 먹은패에
+// 있고 월이 같은 카드"만 보면 이미 예전 턴에 먹어서 먹은패에 쭉 있던 같은 월의 다른 카드
+// (예: 광)를 잘못 짚어버릴 수 있다 - id는 월로 시작하니 월만 같으면 다 후보가 되기 때문.
+// "이번 턴 직전까지 바닥에 있다가 지금 먹은패로 들어간 카드"만 진짜 짝이므로, 그 조건
+// (예전에 바닥에 있었는지)을 추가로 걸러내기 위해 따로 기록한다.
+function captureFloorCardIds() {
+  const set = new Set();
+  document.querySelectorAll('.floor .card[data-id]').forEach((elm) => set.add(elm.dataset.id));
+  return set;
+}
+
+// 손패 줄(내 손패/상대방 손패 더미)의 렌더 직전 위치를 기록해둔다. 카드를 낼 때
+// "그 손에서 빠져나가는" 애니메이션의 출발점으로 쓴다.
+function captureHandRowRects() {
+  const map = new Map();
+  const mine = el('my-hand');
+  if (mine) map.set(myId, mine.getBoundingClientRect());
+  document.querySelectorAll('.opp-hand-row[data-player-id]').forEach((row) => {
+    map.set(row.dataset.playerId, row.getBoundingClientRect());
+  });
+  return map;
+}
+
+// 렌더 후 새로 나타났거나 위치가 바뀐 카드들에 이동 애니메이션을 준다.
+// - 기존에 있던 카드가 자리를 옮겼으면: 이전 위치 -> 새 위치로 부드럽게 이동(기존 FLIP 동작 유지).
+// - 이번 턴에 손에서 나온 카드(round.lastEvent.handCardId)면: 그 사람의 손패 줄에서 튀어나오는 것처럼.
+// - 이번 턴에 덱에서 뒤집힌/뽑힌 카드(flippedCardId/drawnCardId)면: 더미에서 뒤집혀 나오는 것처럼
+//   (rotateY로 살짝 "뒤집는" 느낌을 준다) + 더미 그림 자체도 살짝 들썩인다.
+// - 어디서 왔는지 알 수 없는 카드(새 판 초기 배분 등)는 카드 자체의 은은한 등장(pop) 효과만 남긴다.
+// 전정기관 장애 등으로 motion을 줄이고 싶어하는 사용자 설정을 감지한다. CSS의
+// @media (prefers-reduced-motion: reduce)는 선언적 keyframe 애니메이션(@keyframes)에는
+// 자동으로 적용되지만, JS가 직접 DOM에 엘리먼트를 만들어 붙이는 .impact-ring 같은 건
+// CSS만으로는 막을 수 없어서(만들어버린 뒤에는 @media가 "그 애니메이션을 재생 안 함"만
+// 할 뿐 엘리먼트 자체는 여전히 DOM에 남아 animationend가 영영 안 불려 새게 된다) JS
+// 쪽에서도 직접 체크해서 아예 만들지 않아야 한다.
+function prefersReducedMotion() {
+  return typeof window.matchMedia === 'function'
+    && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+// 클래스를 하나 붙여 CSS @keyframes 애니메이션을 재생한다. 같은 클래스가 이미 붙어 있어서
+// (예: 같은 카드가 아주 짧은 간격으로 다시 반짝여야 하는 드문 경우) 그냥 add만 하면
+// 브라우저가 "이미 붙어있는 클래스"로 보고 애니메이션을 재시작하지 않으므로, 그때만
+// remove -> 강제 리플로우(offsetWidth) -> add로 확실히 처음부터 다시 재생시킨다. 클래스가
+// 아직 없는 보통의 경우(카드 한 장은 평생 한 번만 캡처되므로 거의 항상 이 경우다)는 강제
+// 리플로우 없이 바로 add한다 - 싹쓸이/폭탄처럼 카드 여러 장이 한 틱 안에 동시에 반짝일 때,
+// 카드마다 강제 리플로우를 읽어대면(레이아웃 스래싱) 그 자체가 끊김의 원인이 되기 때문이다.
+function restartAnimClass(elm, className) {
+  if (elm.classList.contains(className)) {
+    elm.classList.remove(className);
+    // eslint-disable-next-line no-unused-expressions
+    elm.offsetWidth;
+  }
+  elm.classList.add(className);
+}
+
+// 카드가 착지하는 순간 한 번 과장되게 찌그러지는 "찰진" 타격 임팩트.
+function slamCard(elm) {
+  if (prefersReducedMotion()) return;
+  restartAnimClass(elm, 'slam');
+}
+
+// 착지 순간 카드 자체가 아주 짧게 확 밝아졌다 돌아오는 "히트 플래시" - 액션 게임에서 타격을
+// 읽기 쉽게 만드는 가장 확실한 기법 중 하나다. transform 애니메이션(slam)만으로는 눈에 잘 안
+// 띄어도, 밝기가 확 튀는 프레임 한두 개는 누구 눈에도 분명히 들어온다.
+function hitFlash(elm) {
+  if (prefersReducedMotion()) return;
+  restartAnimClass(elm, 'hit-flash');
+}
+
+// 카드가 착지한 지점에 퍼져나가는 충격 링을 하나 만들어 붙였다가, 애니메이션이 끝나면
+// 스스로 지운다(계속 쌓이면 DOM이 새므로 반드시 정리한다).
+function spawnImpactRing(elm) {
+  if (prefersReducedMotion()) return;
+  const rect = elm.getBoundingClientRect();
+  const ring = document.createElement('div');
+  ring.className = 'impact-ring';
+  ring.style.left = `${rect.left + rect.width / 2}px`;
+  ring.style.top = `${rect.top + rect.height / 2}px`;
+  document.body.appendChild(ring);
+  ring.addEventListener('animationend', () => ring.remove(), { once: true });
+}
+
+function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFloorIds) {
+  const deckStack = el('deck-stack');
+  const deckRect = deckStack ? deckStack.getBoundingClientRect() : null;
+  const evt = (state.round && state.round.lastEvent) || {};
+  const captureKinds = ['jjok', 'ttadak', 'ppeok_resolved', 'sweep', 'capture', 'bonus_deck', 'bonus_hand'];
+  let deckTapped = false;
+  if (DEBUG_ANIM) {
+    logAnim('[anim] evt', JSON.stringify(evt), 'oldRects.size', oldRects.size);
+  }
+  // 이번 렌더에서 이미 "뻑 형성" 반짝임을 준 floor-group을 기억해, 같은 무더기의 카드
+  // 두 장(손패로 낸 카드 + 덱에서 뒤집은 카드)이 각각 도착할 때마다 중복으로 반짝이지 않게 한다.
+  const formedGroups = new Set();
+  // 이번 렌더에서 새로 날아오는 카드들의 Animation 객체를 모아둔다. 예전에는
+  // handleGameEvent(효과음+배너+흔들기)가 renderGame 안에서 카드보다 훨씬 먼저(서버
+  // 상태가 갱신된 그 즉시) 재생됐는데, 실제 카드는 이 함수가 requestAnimationFrame
+  // 한 틱 뒤에야 날아가기 시작해 340~520ms를 더 들여 도착한다. 그래서 소리/배너가
+  // 카드보다 늘 먼저 터져 "때리는 느낌"이 아니라 "따로 노는 느낌"이 났다. 이 배열에
+  // 모은 Animation들이 전부 끝나는 시점(=카드가 실제로 다 착지한 시점)에 맞춰
+  // handleGameEvent를 재생하도록, 아래에서 Promise.all(...).then(...)으로 넘긴다.
+  const primaryAnims = [];
+
+  function maybeFlashCapture(elm) {
+    if (!captureKinds.includes(evt.kind)) return false;
+    if (!elm.closest('.cap-cards')) return false;
+    restartAnimClass(elm, 'capture-flash');
+    return true;
+  }
+
+  // 캡처된 카드가 도착하는 순간, 카드 한 장의 반짝임만으로는 "먹었다"는 무게감이 부족해서
+  // 그 카드를 받아들이는 종류별 묶음(cap-group) 그릇 자체도 살짝 튀어오르게 한다.
+  function groupPunch(elm) {
+    const group = elm.closest('.cap-group');
+    if (!group) return;
+    restartAnimClass(group, 'group-punch');
+  }
+
+  // 뻑이 "형성"되는 순간(카드를 먹지 못하고 바닥에 3장이 묶이는 순간)은 캡처가 아니라서
+  // maybeFlashCapture의 대상이 아니지만, 그렇다고 아무 신호도 없으면 방금 일어난 일이
+  // 쪽/뻑해소처럼 "먹은" 건지 그냥 평범하게 바닥에 놓인 건지 구분이 안 간다.
+  // gostop_rules.md 5장의 그 특별한 순간을, 캡처(금색)와는 다른 색(호박색)으로 표시해서
+  // "이 3장이 방금 뻑으로 묶였다"는 걸 바로 알아보게 한다. 이번 턴에 새로 도착한 카드
+  // (handCardId/flippedCardId)가 속한 .floor-group을 찾아, 그 무더기 전체(이미 있던
+  // 3번째 카드까지 포함해 3장 모두)를 한 번에 반짝인다.
+  function maybeFlashFormed(elm) {
+    if (evt.kind !== 'ppeok_formed') return;
+    if (evt.handCardId !== elm.dataset.id && evt.flippedCardId !== elm.dataset.id) return;
+    const group = elm.closest('.floor-group');
+    if (!group || formedGroups.has(group)) return;
+    formedGroups.add(group);
+    group.querySelectorAll('.card').forEach((c) => {
+      restartAnimClass(c, 'formed-flash');
+    });
+  }
+
+  // 카드 한 장을 dx,dy(출발 지점 - 도착 지점) 거리만큼 날아오는 것처럼 재생한다.
+  // 예전에는 "인라인 transform으로 순간이동 -> 강제 리플로우 -> transition 활성화"라는
+  // CSS transition 트릭 하나로 시작점과 도착점, 딱 두 지점만 오갔는데, 그러다 보니
+  // (1) 덱에서 뒤집히는 카드가 회전과 이동이 한꺼번에 재생돼 "뒤집는 느낌"과 "날아가는
+  // 느낌"이 뭉개져 보이고, (2) 손에서 내는 카드도 그냥 밋밋하게 직선으로 미끄러져 들어와
+  // 손맛이 없다는 문제가 있었다. Web Animations API(element.animate)로 바꿔서 중간 지점을
+  // 하나 더 둔 3단 키프레임을 쓰면: 덱 카드는 "제자리에서 먼저 다 뒤집힌 뒤에 활공해 오는"
+  // 2단 동작을, 손 카드는 살짝 위로 튕겼다가 내려앉는 포물선을, 각각 선명하게 보여줄 수 있다.
+  // delay(ms)는 폭탄처럼 손패 3장이 한꺼번에 나가는 경우, 실제로 손으로 세 장을 연달아
+  // "탁탁탁" 내려치는 것처럼 조금씩 시차를 두고 착지시키기 위한 것이다(delay가 있을 때는
+  // fill:'both'로 대기 구간에도 시작 transform을 유지시켜, 지연 중 카드가 잠깐 순간이동한
+  // 것처럼 보이는 깜빡임을 막는다).
+  // 이번 렌더의 이벤트(evt)가 지목하는 "실제로 행동을 일으킨 카드"인지 확인한다 - 방금 낸
+  // 손패 카드, 방금 뒤집힌/뽑힌 덱 카드, 폭탄으로 나간 손패 3장. 이 카드만 무거운 타격
+  // 연출(찌그러짐/충격링/소리)을 받는다 - 캡처되어 딸려가는 상대 카드나 레이아웃이 밀려
+  // 몇 px 이동한 무관한 카드까지 다 반응하면 카드 여러 장이 겹칠 때 버벅였다(12장 참고).
+  function isPrimaryMover(id) {
+    return id === evt.handCardId || id === evt.flippedCardId || id === evt.drawnCardId
+      || (Array.isArray(evt.handCardIds) && evt.handCardIds.includes(id));
+  }
+  // 캡처되어 먹은패 더미(.cap-cards)로 들어가는 카드인지만 순수하게 확인한다(클래스는
+  // 안 건드림) - primaryMover는 아니지만(내가 낸 카드도, 덱에서 뒤집힌 카드도 아닌) 그
+  // 매치 결과로 딸려서 캡처되는 상대 카드를 가려내는 데 쓴다. 이런 카드는 ③페이즈(손패
+  // +덱 페이즈가 모두 끝난 뒤)에 출발시켜야 "맞춰서 가져간다"는 순서가 제대로 보인다.
+  function willCapture(elm) {
+    return captureKinds.includes(evt.kind) && !!elm.closest('.cap-cards');
+  }
+
+  // 이 카드에 새 애니메이션을 걸기 직전에, 혹시 이 "같은 엘리먼트"에 걸려 있던 이전
+  // 애니메이션이 있으면 취소한다(finish가 아니라 cancel - 그래야 그 이전 애니메이션의
+  // onfinish가 뒤늦게 불려서 이미 다른 일을 하고 있는 이 카드에 엉뚱한 타이밍에 충격
+  // 이펙트/효과음이 발동하는 걸 막을 수 있다). 예전엔 렌더할 때마다 페이지의 모든
+  // 애니메이션을 통째로 강제 종료시켰는데, 그러면 "이번 턴과 전혀 무관한, 아직 진행 중인
+  // 이전 턴의 카드"까지 전부 최종 위치로 순간이동해버려서 - 특히 한 턴의 캡처 시퀀스가
+  // 다 끝나기도 전에 다음 상태가 도착하는 흔한 경우(캡처 있는 턴은 1초 넘게 걸림), "맞은
+  // 카드끼리 같이 움직이는" 장면 자체가 매번 잘려나가 한 번도 안 보이는 원인이 됐다. 이제는
+  // 지금 막 새 애니메이션을 받으려는 그 카드 자신에 대해서만, 꼭 필요한 만큼만 정리한다.
+  function cancelPriorAnim(elm) {
+    elm.getAnimations().forEach((a) => { try { a.cancel(); } catch (e) { /* 이미 끝났으면 무시 */ } });
+    // cancel()은 onfinish를 안 불러주므로, 이전 애니메이션이 suspendClip으로 들고 있던
+    // 카운터를 그 onfinish 안의 restoreClip이 영영 못 돌려준다 - 여기서 대신 돌려준다.
+    if (elm.dataset.clipHeld === '1') restoreClip(elm, elm.closest('.cap-groups'));
+    // 이 카드에 남아있을 수 있는 이전 세대(generation)의 예약(효과음/충격 이펙트 setTimeout,
+    // z-index 갱신 등)이 뒤늦게 실행되지 않도록 세대 번호를 하나 올려서 돌려준다 - 호출부는
+    // 이 번호를 자신의 지연 콜백들에 넣어뒀다가, 실행 시점에 "아직 내 세대가 맞는지" 확인한다.
+    const gen = (Number(elm.dataset.flightGen) || 0) + 1;
+    elm.dataset.flightGen = String(gen);
+    return gen;
+  }
+
+  // 캡처되는 카드는 renderGame()이 이미 최종 위치(.cap-cards, 즉 .cap-groups 안)에
+  // 넣어둔 채로 FLIP 기법이 먼 곳(바닥/손패)에서 날아오는 것처럼 거꾸로 transform을
+  // 건다. 그런데 .cap-groups는 먹은패가 많아지면 가로로 스크롤되게 하려고
+  // overflow-x:auto/overflow-y:hidden으로 잘려 있어서(style.css), 카드가 그 좁은 줄
+  // 바깥에 있는 동안(=비행의 대부분 구간)은 그냥 클리핑되어 안 보이다가 착지 직전에야
+  // 불쑥 나타난다 - "카드가 사라졌다가 나중에 다시 나타난다"는 증상의 진짜 정체가 이거였다
+  // (여태까지 고친 건 전부 "언제/어떤 값으로 날아가는지"였지, "그 비행 자체가 보이는지"는
+  // 아니었다). 카드가 그 컨테이너 안에서 날아다니는 동안만 일시적으로 클리핑을 풀어준다 -
+  // 한 턴에 여러 장이 동시에 같은 더미로 날아들 수 있어(뻑/따닥/싹쓸이) 카운터로 관리하고,
+  // 마지막 한 장까지 다 도착해야 원래대로(가로 스크롤 가능하게) 되돌린다.
+  function suspendClip(elm) {
+    const container = elm.closest('.cap-groups');
+    if (!container) return null;
+    const count = Number(container.dataset.flightCount || 0) + 1;
+    container.dataset.flightCount = String(count);
+    container.style.overflow = 'visible';
+    // 이 카드가 아직 restoreClip을 못 받은 채로(=카운터를 하나 들고 있는 채로) 있다는
+    // 표시. cancelPriorAnim이 이 카드를 다른 애니메이션으로 넘겨받을 때(cancel은 onfinish를
+    // 안 불러주므로) 이 표시를 보고 대신 restoreClip을 불러줘야 카운터가 영원히 안 풀리는
+    // 채로 남는 걸(=먹은패 줄이 다시는 가로 스크롤 안 되는 걸) 막을 수 있다.
+    elm.dataset.clipHeld = '1';
+    return container;
+  }
+  function restoreClip(elm, container) {
+    if (!container) return;
+    delete elm.dataset.clipHeld;
+    const count = Number(container.dataset.flightCount || 1) - 1;
+    if (count <= 0) {
+      delete container.dataset.flightCount;
+      container.style.overflow = '';
+    } else {
+      container.dataset.flightCount = String(count);
+    }
+  }
+
+  // 두 값 사이를 t만큼 선형보간한다(t=0이면 a, t=1이면 b, t=1보다 크면 b를 지나쳐 오버슈트).
+  function mix(a, b, t) { return a + (b - a) * t; }
+
+  // 카드가 날아가는 한 구간(leg)의 길이. flyCard/페이즈 타이밍 계산이
+  // 전부 이 값을 정확히 공유해야 하는데(하나라도 어긋나면 keyframe 경계가 안 맞아 버벅이는
+  // 것처럼 보인다). "카드가 너무 빨리 날아가고 쫀득함이 없다"는 피드백을 받아 다시
+  // 올렸다(620/450 -> 700/520) - 대기 시간(HOLD/PHASE_GAP)과 이동 속도는 다른 축이라,
+  // 대기 시간은 그대로 두고 이동 자체만 더 느긋하게 만든다. 오버슈트/정착 바운스
+  // (buildApproachKeyframes, flyCard/flyCardViaMeeting)와 함께 봐야 "쫀득함"이 완성된다.
+  function approachDurFor(style) { return style === 'deck' ? 700 : 520; }
+
+  // 마지막(가장 늦은) 페이즈의 카드가 부딪힌 뒤에도, 전역 스윕이 시작되기까지 아주 잠깐
+  // 더 멈춰 있는 여유(격투 게임의 히트스톱과 비슷한 "타격의 무게감"을 위한 짧은 정지).
+  // 카드가 날아가는 속도 자체(approachDurFor)와는 다른 축이라, "느긋한 모션"은 그대로 두고
+  // 이 순수 대기 시간만 줄여서 전체 시퀀스 길이를 단축한다 - 짧을수록 다음 턴이 그 전에
+  // 도착해 시퀀스를 끊어버릴 여지도 줄어든다(빠르게 연달아 턴이 진행될 때 특히).
+  const HOLD = 110;
+
+  // style별 "던지기/뒤집기" 모양의 keyframe들을 만든다. endDx/endDy는 이 모양이 도착하는
+  // 지점(기본 0,0=진짜 최종 위치, 캡처면 "바닥에서 맞춰지는 지점")이고, offsetScale은 이
+  // 모양 전체가 차지할 시간 구간의 길이를 전체 애니메이션 대비 비율로 준다(예: 0.4면
+  // 전체의 40% 동안 이 모양이 재생됨). 반환값은 { keyframes, easing }.
+  function buildApproachKeyframes(style, dx, dy, endDx = 0, endDy = 0, offsetScale = 1) {
+    const s = offsetScale;
+    if (style === 'deck') {
+      return {
+        easing: 'cubic-bezier(.18,.85,.3,1)',
+        keyframes: [
+          { offset: 0, transform: `translate(${dx}px, ${dy}px) scale(0.55) rotateY(180deg)` },
+          { offset: s * 0.4, transform: `translate(${mix(dx, endDx, 0.12)}px, ${mix(dy, endDy, 0.12) - 16}px) scale(0.86) rotateY(0deg)` },
+          { offset: s * 0.48, transform: `translate(${mix(dx, endDx, 0.12)}px, ${mix(dy, endDy, 0.12) - 16}px) scale(0.86) rotateY(0deg)` },
+          { offset: s * 0.8, transform: `translate(${mix(dx, endDx, 1.06)}px, ${mix(dy, endDy, 1.06)}px) scale(1.12) rotateY(0deg)` },
+          { offset: s, transform: `translate(${endDx}px, ${endDy}px) scale(1) rotateY(0deg)` },
+        ],
+      };
+    }
+    if (style === 'hand') {
+      const rot = dx > 0 ? -22 : 22;
+      return {
+        easing: 'cubic-bezier(.22,.85,.3,1)',
+        keyframes: [
+          { offset: 0, transform: `translate(${mix(dx, endDx, 0.1)}px, ${mix(dy, endDy, 0.1) + 8}px) scale(0.5) rotate(${rot * 0.5}deg)` },
+          { offset: s * 0.12, transform: `translate(${dx}px, ${dy}px) scale(0.46) rotate(${rot}deg)` },
+          { offset: s * 0.58, transform: `translate(${mix(dx, endDx, 0.6)}px, ${mix(dy, endDy, 0.6) - 50}px) scale(0.88) rotate(${rot * 0.3}deg)` },
+          { offset: s * 0.78, transform: `translate(${mix(dx, endDx, 1.05)}px, ${mix(dy, endDy, 1.05)}px) scale(1.11) rotate(${rot * -0.05}deg)` },
+          { offset: s, transform: `translate(${endDx}px, ${endDy}px) scale(1) rotate(0deg)` },
+        ],
+      };
+    }
+    return {
+      easing: 'cubic-bezier(.2,.85,.3,1)',
+      keyframes: [
+        { offset: 0, transform: `translate(${dx}px, ${dy}px) scale(0.94) rotate(-4deg)` },
+        { offset: s * 0.5, transform: `translate(${mix(dx, endDx, 0.5)}px, ${mix(dy, endDy, 0.5) - 18}px) scale(0.98) rotate(-2deg)` },
+        { offset: s * 0.78, transform: `translate(${mix(dx, endDx, 1.05)}px, ${mix(dy, endDy, 1.05)}px) scale(1.09) rotate(2deg)` },
+        { offset: s, transform: `translate(${endDx}px, ${endDy}px) scale(1) rotate(0deg)` },
+      ],
+    };
+  }
+
+  // 손패에서 낸/덱에서 뒤집은/이미 바닥에 있던 카드가 자기 최종 위치(먹은패 더미 또는
+  // 바닥에 그대로)까지 날아가는 한 번의 여행을 재생한다. 착지 직전(약 80~92% 구간)에는
+  // 일부러 같은 transform 값을 두 keyframe에 반복해서 "정지 구간(히트스톱)"을 만든다 -
+  // 격투 게임에서 타격의 무게감을 표현할 때 쓰는 기법과 같다. JS 타이머로 실제
+  // 애니메이션을 pause()/play()하던 예전 방식은 여러 카드가 겹칠 때 그 자체로 버벅임의
+  // 원인이 됐는데, keyframe 값 자체를 정지시키면 브라우저가 평소 이동과 완전히 동일한
+  // 방식(추가 JS 개입 없이)으로 처리해서 훨씬 매끄럽다. 모든 스타일을 같은 총 시간(DUR)
+  // 으로 맞춰서 "덱은 빠르고 손은 느리고..." 식으로 제각각 다르게 느껴지던 것도 없앴다.
+  function flyCard(elm, dx, dy, style, delay = 0, primaryMover = false) {
+    elm.classList.remove('pop');
+    elm.style.transform = '';
+    const myGen = cancelPriorAnim(elm);
+    // 화면에서 다른 날아다니는 카드와 겹칠 때 어느 게 위에 보일지는, 그 카드가 "실제로
+    // 움직이기 시작하는 순간"에만 z-index를 올려 받는 식으로 정한다(delay가 지난 뒤). delay
+    // 값 자체로 미리 z-index를 매겨두면, 아직은 원래 자리에 가만히 대기 중일 뿐인(대기 시간이
+    // 긴) 카드가, 그 사이 실제로 날아가고 있는 다른 카드보다 값이 높아 그 위를 덮어버리는
+    // 역전이 생긴다(예: 손패 카드와 함께 캡처되는 바닥 카드는 대기 시간이 제일 길어서 아직
+    // 가만히 있을 뿐인데, 그 사이 진짜로 날아가는 덱 카드보다 위에 그려져버림 - "덱 카드가
+    // 방금 낸 카드 아래로 깔린다"는 증상의 정체가 이거였다). 지금 막 움직이기 시작한 카드만
+    // 공용 카운터에서 번호를 하나 받아가게 하면, 실제 시간 순서대로 항상 최근에 움직인
+    // 카드가 위에 보인다. (세대 번호를 확인해서, 이 카드가 그 사이 다른 애니메이션으로
+    // 넘어갔으면 이 지연 콜백은 조용히 건너뛴다.)
+    const bumpZIndex = () => {
+      if (elm.dataset.flightGen !== String(myGen)) return;
+      elm.style.zIndex = String(nextFlightZIndex++);
+    };
+    if (delay > 0) setTimeout(bumpZIndex, delay); else bumpZIndex();
+    const clipContainer = suspendClip(elm);
+    // 애니메이션이 "시작되고 나서" GPU 레이어로 승격되면 그 승격 자체가 첫 프레임 즈음에
+    // 한 번 끊기는 원인이 될 수 있다(잘 알려진 브라우저 렌더링 특성). will-change를
+    // 애니메이션 시작 "직전"에 걸어두면 브라우저가 미리 레이어를 준비해둬서 이 끊김을
+    // 피할 수 있다 - 끝나면 바로 지운다(계속 걸어두면 오히려 메모리를 불필요하게 잡아먹음).
+    elm.style.willChange = 'transform';
+    // .card 기본 스타일에 hover/선택 카드를 부드럽게 들어올리기 위한
+    // `transition: transform 0.12s`가 걸려 있다. WAAPI 애니메이션과 CSS 트랜지션은
+    // 스펙상 서로 안 부딪히게 되어 있지만(애니메이션이 끝나 값이 되돌아가는 순간이
+    // 트랜지션을 다시 발동시키지 않음), 혹시 모를 상호작용 여지 자체를 없애기 위해
+    // 날아다니는 동안은 이 트랜지션을 아예 꺼둔다 - 끝나면 원래대로 복원한다.
+    elm.style.transition = 'none';
+    const DUR = approachDurFor(style);
+    const { keyframes: baseFrames, easing } = buildApproachKeyframes(style, dx, dy);
+    // 마지막 오버슈트 keyframe과 최종(1) keyframe 사이에, 오버슈트와 같은 transform 값을
+    // 가진 keyframe을 하나 더 끼워 넣어 착지 직전 "정지 구간(히트스톱)"을 만든다 - 격투
+    // 게임에서 타격의 무게감을 표현할 때 쓰는 기법과 같다. 그 다음, 딱 멈췄다가 바로
+    // scale(1)로 끝내는 대신 살짝 눌렸다(scale을 1보다 더 작게) 튕겨 돌아오는 "쫀득한"
+    // 정착 한 번을 더 넣는다 - 오버슈트(부풀어 오름)+히트스톱(정지)+살짝 눌림(되튕김)까지
+    // 셋이 이어져야 만화적인 탄성(스쿼시&스트레치)이 느껴진다.
+    const overshoot = baseFrames[baseFrames.length - 2];
+    const finalFrame = baseFrames[baseFrames.length - 1];
+    const holdOffset = Math.min(overshoot.offset + 0.1, 0.97);
+    const settleOffset = Math.min(holdOffset + 0.02, 0.99);
+    const keyframes = [
+      ...baseFrames.slice(0, -1),
+      { offset: holdOffset, transform: overshoot.transform },
+      { offset: settleOffset, transform: 'translate(0px, 0px) scale(0.95) rotate(0deg)' },
+      finalFrame,
+    ];
+
+    const anim = elm.animate(keyframes, { duration: DUR, easing, delay, fill: delay > 0 ? 'both' : 'none' });
+
+    // 이 카드가 "이번 턴의 실제 행위자"(방금 낸/뒤집은/뽑은/폭탄 카드)일 때만 무거운 타격
+    // 연출(찌그러짐/충격링/밝기 플래시/타격음)을 준다. 캡처되어 먹은패로 들어가는 상대편
+    // 카드(willCapture)는 그 카드를 낸 사람이 아니므로 별도의 "쾅"이 아니라, 더 가벼운
+    // capture-flash 반짝임 + groupPunch 정도로만 반응한다. 그 외(레이아웃이 밀려서 몇 px
+    // 이동한 무관한 카드들)는 아무 반응도 없이 조용히 미끄러지기만 한다.
+    const shouldPunch = primaryMover;
+
+    anim.onfinish = () => {
+      elm.style.zIndex = '';
+      elm.style.willChange = '';
+      elm.style.transition = '';
+      restoreClip(elm, clipContainer);
+      // 이 elm이 다른 렌더에서 이미 재사용/철거됐으면(예: DOM에서 빠진 detached 상태) 어떤
+      // 후처리 효과도 재생하지 않고 조용히 넘어간다 - detached 엘리먼트의
+      // getBoundingClientRect()는 전부 0인 사각형을 주므로, 그대로 진행하면 화면 왼쪽 위
+      // 구석에 뜬금없는 충격 링이 반짝이는("이펙트 에러") 유령 효과가 생긴다.
+      if (!elm.isConnected) return;
+      const flashed = maybeFlashCapture(elm);
+      if (shouldPunch) {
+        slamCard(elm);
+        spawnImpactRing(elm);
+        hitFlash(elm);
+        cardSlap();
+      }
+      if (flashed) groupPunch(elm);
+      maybeFlashFormed(elm);
+    };
+    return anim;
+  }
+
+  // 캡처 전용: 손패에서 낸/덱에서 뒤집은 카드가 곧바로 내 먹은패로 가지 않고, ①공용
+  // 필드의 짝이 있던 자리까지 날아가 거기서 부딪히고(타격 연출), ②waitMs만큼 머물다가,
+  // ③내 먹은패까지 마저 슬라이드해 들어가는 것을 **하나의 연속된 애니메이션**으로 재생한다
+  // (여러 elm.animate() 호출을 이어 붙이면 애니메이션 객체가 여러 개가 되어 서로 충돌할
+  // 여지가 생기므로, 하나의 keyframe 배열 안에 세 구간을 전부 담는다). waitMs는 "손패를
+  // 낸다 -> 덱을 뒤집는다 -> 그제서야 맞춰진 카드들이 전부 한꺼번에 쓸려 들어간다"는 순서를
+  // 지키기 위해 다른 페이즈의 캡처가 마저 끝날 때까지 기다리는 시간이다(자기 자신의 부딪힘
+  // 이후 남는 시간, 호출부의 globalSweepStart 계산 참고). 중간 지점 타격 연출은 실제
+  // keyframe 진행과 시간이 정확히 맞아떨어지도록 setTimeout으로 그 시점에 맞춰 재생한다.
+  function flyCardViaMeeting(elm, dx, dy, style, delay, viaDx, viaDy, waitMs) {
+    elm.classList.remove('pop');
+    elm.style.transform = '';
+    const myGen = cancelPriorAnim(elm); // flyCard와 동일한 이유(이전 애니메이션이 남긴 예약된 콜백 무효화)
+    // flyCard와 동일한 이유(실제로 움직이기 시작하는 순간에만 z-index를 올려 받음, 세대 확인)
+    const bumpZIndex = () => {
+      if (elm.dataset.flightGen !== String(myGen)) return;
+      elm.style.zIndex = String(nextFlightZIndex++);
+    };
+    if (delay > 0) setTimeout(bumpZIndex, delay); else bumpZIndex();
+    elm.style.willChange = 'transform'; // flyCard와 동일한 이유(레이어 승격을 미리 끝내둠)
+    elm.style.transition = 'none'; // flyCard와 동일한 이유(기본 .card 트랜지션과의 상호작용 여지 제거)
+    const clipContainer = suspendClip(elm); // flyCard와 동일한 이유(.cap-groups의 overflow 클리핑 해제)
+
+    const approachDur = approachDurFor(style);
+    const sweepDur = approachDurFor('move'); // 맞춰지는 지점 -> 내 먹은패, 'move' 스타일 재사용
+    const TOTAL = approachDur + waitMs + sweepDur;
+    const approachEnd = approachDur / TOTAL;
+    const holdEnd = (approachDur + waitMs) / TOTAL;
+
+    // 접근 구간(0~approachEnd) 모양 자체를, 도착 지점이 진짜 최종 위치(0,0)가 아니라
+    // 맞춰지는 지점(viaDx,viaDy)이 되도록 만든다(offsetScale=approachEnd로 그 시간 구간
+    // 안에 눌러 담음) - buildApproachKeyframes가 이미 이 매개변수화를 지원한다.
+    const approach = buildApproachKeyframes(style, dx, dy, viaDx, viaDy, approachEnd);
+    const keyframes = [...approach.keyframes];
+    if (holdEnd > approachEnd) {
+      keyframes.push({ offset: holdEnd, transform: `translate(${viaDx}px, ${viaDy}px) scale(1) rotate(0deg)` });
+    }
+    // 맞춰지는 지점에서 내 먹은패까지 마저 슬라이드(move 스타일 재사용, 이어지는 동작이라
+    // "막 던져진" 느낌의 시작 자세 없이 안정된 자세(scale 1/rotate 0)에서 바로 이어간다).
+    const sweepSpan = 1 - holdEnd;
+    const at = (f) => holdEnd + f * sweepSpan;
+    keyframes.push({ offset: at(0.5), transform: `translate(${mix(viaDx, 0, 0.5)}px, ${mix(viaDy, 0, 0.5) - 18}px) scale(0.98) rotate(-2deg)` });
+    keyframes.push({ offset: at(0.78), transform: `translate(${mix(viaDx, 0, 1.05)}px, ${mix(viaDy, 0, 1.05)}px) scale(1.09) rotate(2deg)` });
+    keyframes.push({ offset: at(0.9), transform: `translate(${mix(viaDx, 0, 1.05)}px, ${mix(viaDy, 0, 1.05)}px) scale(1.09) rotate(2deg)` });
+    // flyCard와 동일한 이유(오버슈트+히트스톱 뒤에 살짝 눌렸다 튕겨 돌아오는 "쫀득한" 정착).
+    keyframes.push({ offset: at(0.96), transform: 'translate(0px, 0px) scale(0.95) rotate(0deg)' });
+    keyframes.push({ offset: 1, transform: 'translate(0px, 0px) scale(1) rotate(0deg)' });
+
+    const anim = elm.animate(keyframes, { duration: TOTAL, easing: approach.easing, delay, fill: delay > 0 ? 'both' : 'none' });
+
+    // 맞춰지는 지점 도착 타격(찌그러짐/충격링/플래시/소리) - 실제 keyframe 진행 시각과
+    // 정확히 같은 시점(delay + approachDur)에 맞춰 재생한다. 이 setTimeout은 애니메이션
+    // 객체와 무관한 별도의 JS 타이머라서, 그 사이 이 카드가 cancelPriorAnim으로 다른
+    // 애니메이션에 넘어갔어도(=세대 번호가 바뀌었어도) 이 타이머 자체는 그대로 실행되려
+    // 한다 - 세대 번호를 확인해서 넘어간 경우엔 조용히 건너뛴다. 이미 화면에서 빠진
+    // (detached) 카드도 마찬가지로 건너뛴다 - 안 그러면 화면 구석에 유령 충격 링이 튀는
+    // 것처럼 보인다.
+    setTimeout(() => {
+      if (elm.dataset.flightGen !== String(myGen) || !elm.isConnected) return;
+      slamCard(elm);
+      spawnImpactRing(elm);
+      hitFlash(elm);
+      cardSlap();
+    }, delay + approachDur);
+
+    anim.onfinish = () => {
+      elm.style.zIndex = '';
+      elm.style.willChange = '';
+      elm.style.transition = '';
+      restoreClip(elm, clipContainer);
+      if (!elm.isConnected) return;
+      const flashed = maybeFlashCapture(elm);
+      if (flashed) groupPunch(elm);
+      maybeFlashFormed(elm);
+    };
+    return anim;
+  }
+
   requestAnimationFrame(() => {
+    // 한 턴 안에서도 실제로는 "손패를 낸다 -> (짝이 맞으면 탁) -> 덱을 뒤집는다 ->
+    // (짝이 맞으면 또 탁) -> 그제서야 먹은 패들이 내 앞으로 쓸려 들어온다"처럼 순서가 있는
+    // 사건인데, 예전에는 이 모든 카드가 한 렌더 안에서 전부 동시에 날아가고 있었다(그래서
+    // "누가 무엇과 맞았는지"가 한눈에 안 들어오고, 무거운 효과가 동시에 겹쳐 버벅이기도
+    // 했다). 아래에서 역할별로 시작 시각을 어긋나게 둬서 실제 턴 진행 순서 그대로 보이게
+    // 한다: ①손패 낸 카드(또는 폭탄 3장) -> ②덱에서 뒤집은 카드, 순서로 페이즈를 나눈다.
+    const PHASE1_DUR = approachDurFor('move'); // ①손패 페이즈(내가 낸 카드/상대가 낸 카드/폭탄)의 기준 길이
+    // 페이즈 사이 호흡 - 손패를 낸 순간과 덱을 뒤집는 순간 사이가 너무 짧아서 부자연스럽다는
+    // 피드백을 받아 늘렸다(120 -> 320). 이 값은 순수하게 "손패가 다 부딪힌 뒤 덱 페이즈가
+    // 시작하기까지"의 호흡이라, 늘려도 각 카드 자체가 날아가는 속도(approachDurFor)나
+    // 부딪힌 뒤 스윕 시작까지의 대기(HOLD)에는 영향이 없다.
+    const PHASE_GAP = 320;
+    const hasHandPhase = Boolean(evt.handCardId)
+      || (Array.isArray(evt.handCardIds) && evt.handCardIds.length > 0);
+    const hasDeckPhase = Boolean(evt.flippedCardId || evt.drawnCardId);
+    // 폭탄은 손패 3장이 70ms씩 시차를 두고 착지하므로, ①페이즈가 그만큼 더 길어진다.
+    const handPhaseDur = PHASE1_DUR
+      + (Array.isArray(evt.handCardIds) ? (evt.handCardIds.length - 1) * 70 : 0);
+    const deckPhaseStart = hasHandPhase ? handPhaseDur + PHASE_GAP : 0;
+
+    // 카드 id는 "3-gwang"처럼 월(月)로 시작한다(보너스패만 예외) - 캡처되는 바닥 카드가
+    // 손패로 낸 카드와 짝인지, 덱에서 뒤집힌 카드와 짝인지는 서버가 따로 안 알려주지만,
+    // 월만 같으면 짝이었다는 뜻이므로 id 앞자리로 충분히 구분할 수 있다.
+    function cardMonth(cid) {
+      if (!cid || cid.startsWith('bonus')) return null;
+      const n = parseInt(cid.split('-')[0], 10);
+      return Number.isNaN(n) ? null : n;
+    }
+    const handCardMonth = cardMonth(evt.handCardId);
+    const flippedCardMonth = cardMonth(evt.flippedCardId);
+    // 손패로 낸 카드/덱에서 뒤집은 카드가 각각 "바닥의 어느 지점에서 맞춰졌는지" -
+    // 캡처되어 먹은패로 들어가는(=primaryMover가 아닌 willCapture) 카드들 중 월이 같은
+    // 카드의 예전(이번 렌더 전) 바닥 위치를 그 "맞춰지는 지점"으로 쓴다.
+    let handViaRect = null;
+    let deckViaRect = null;
+    if (captureKinds.includes(evt.kind)) {
+      document.querySelectorAll('.card[data-id]').forEach((partnerElm) => {
+        const pid = partnerElm.dataset.id;
+        if (isPrimaryMover(pid) || !partnerElm.closest('.cap-cards')) return;
+        // id는 월(月)로 시작하다 보니, 월만 보고 짝을 찾으면 "이미 예전 턴에 먹어서 먹은패에
+        // 쭉 있던 같은 월의 다른 카드"(예: 광)를 잘못 짚어버릴 수 있다. 방금 전까지 바닥에
+        // 있다가 "이번 렌더"에 먹은패로 들어간 카드만 진짜 짝이므로, 예전(직전 렌더) 바닥에
+        // 있었는지까지 확인한다.
+        if (!oldFloorIds || !oldFloorIds.has(pid)) return;
+        const m = cardMonth(pid);
+        if (m == null) return;
+        // 바닥에 같은 월 카드가 2장 있어서 직접 골라야 했던 경우(NEED_CHOICE2)는 그 두 후보가
+        // 월까지 완전히 같으므로, 월만 봐서는 어느 쪽을 실제로 골랐는지 구분이 안 된다(그래서
+        // 가끔 고르지 않은 카드 쪽으로 애니메이션이 잘못 날아갔다 - "왼쪽에서 날아온다"는
+        // 증상의 정체가 이거였다). 서버가 실제로 고른 카드 id(evt.chosenFloorId)를 알려줄 때는
+        // 그 카드만 인정하고 같은 월의 다른 후보는 걸러낸다 - 단, **그 월에 한해서만**이다.
+        // 이걸 월 구분 없이 전체에 걸어버리면(예전 버그), 예를 들어 덱 뒤집기 쪽에서
+        // NEED_CHOICE2가 뜬 턴에는 chosenFloorId가 그 월(예: 6월)만 가리키는데, 손패가 딴
+        // 월(예: 12월)에서 이미 확정적으로 잡은 진짜 짝까지 "chosenFloorId랑 다르다"는
+        // 이유로 덩달아 걸러져 버려서, 방금 낸 손패 카드가 아예 바닥을 들르지도 않고 곧장
+        // 먹은패로 순간이동해버렸다("엔티티 취급을 못 받는다"던 증상이 바로 이거였다).
+        if (evt.chosenFloorId && m === cardMonth(evt.chosenFloorId) && pid !== evt.chosenFloorId) return;
+        const oldPos = oldRects.get(pid);
+        if (!oldPos) return;
+        if (m === handCardMonth && !handViaRect) handViaRect = oldPos;
+        if (m === flippedCardMonth && !deckViaRect) deckViaRect = oldPos;
+      });
+    }
+    // "쪽"(무매치로 낸 손패를, 곧이어 뒤집은 덱 카드가 맞추는 경우)은 짝이 "바닥에 이미
+    // 있던 카드"가 아니라 "손패 카드 자기 자신"이라서, 위 루프의 handViaRect가 절대 못
+    // 찾는다(handViaRect는 바닥에 있던 후보만 본다) - 그러면 손패 카드는 만날 곳도 없이
+    // 그냥 바로 최종 위치로 직행해버리고, 덱 카드도 자기 페이즈 시각에 따로 도착해서 두
+    // 카드가 전혀 안 맞물려 보인다("여전히 따로 움직인다"던 증상 중 하나가 이거였다).
+    // 손패가 잡을 바닥 짝이 없는데(handViaRect 없음) 덱이 뒤집은 카드와 월이 같다면
+    // 바로 이 "쪽" 상황이므로, 손패도 덱과 같은 시각에 도착하도록 맞춘다(경유 지점 없이
+    // 도착 시각만 맞춤 - 어차피 만날 실제 바닥 카드가 없으므로).
+    const isJjokPair = hasHandPhase && hasDeckPhase && !handViaRect
+      && cardMonth(evt.handCardId) != null
+      && cardMonth(evt.handCardId) === cardMonth(evt.flippedCardId);
+    // 손패/덱 카드 각각이 "실제로 이번 턴에 캡처됐는지"를, handViaRect/deckViaRect(바닥
+    // 경유지를 찾았는지) 같은 간접적인 신호 대신 있는 그대로 확인한다 - willCapture가
+    // "이 카드의 새 위치가 먹은패 더미 안인지"를 직접 보므로, 따닥(손패/덱 둘 다 같은 월이라
+    // 경유지 찾기 로직이 한쪽만 잡아버림)이나 보너스패(월 정보가 아예 없어 경유지 로직
+    // 자체가 적용 안 됨) 같은 경우에도 항상 정확하다 - 앞으로 새로운 캡처 종류가 추가돼도
+    // 이 판정만은 깨지지 않는다.
+    const handCardElm = evt.handCardId && document.querySelector(`.card[data-id="${evt.handCardId}"]`);
+    const deckCardId = evt.flippedCardId || evt.drawnCardId;
+    const deckCardElm = deckCardId && document.querySelector(`.card[data-id="${deckCardId}"]`);
+    const handCaptures = Boolean(handCardElm && willCapture(handCardElm));
+    const deckCaptures = Boolean(deckCardElm && willCapture(deckCardElm));
+    // "손패를 낸다(짝이 있으면 탁) -> 덱을 뒤집는다(짝이 있으면 또 탁) -> 그제서야 이번
+    // 턴에 맞춰진 카드들이 전부 한꺼번에 내 먹은패로 쓸려 들어간다"는 순서를 지키기 위해,
+    // 실제로 캡처가 걸린 페이즈들 중 가장 늦게 "탁" 하는 시점(+HOLD)을 전역 스윕 시작
+    // 시각으로 삼는다 - 손패만 캡처했으면 손패가 부딪힌 직후에, 손패+덱이 둘 다
+    // 캡처했으면 덱까지 부딪힌 뒤에야 다같이 스윕을 시작한다.
+    const handHitTime = PHASE1_DUR;
+    const deckHitTime = deckPhaseStart + approachDurFor('deck');
+    const globalSweepStart = HOLD + Math.max(
+      handCaptures ? handHitTime : 0,
+      deckCaptures ? deckHitTime : 0,
+    );
+    // 캡처되어 먹은패로 딸려가는(=primaryMover는 아니지만 willCapture인) 카드는 손패 짝이든
+    // 덱 짝이든 상관없이 전부 이 전역 스윕 시작 시각(globalSweepStart)에 맞춰 동시에
+    // 출발한다 - 몇 장이든(2장이든 4장이든) 같은 순간에 함께 움직여서 "맞춰서 가져간다"는
+    // 느낌을 준다.
+    // 바닥에 남아있는(캡처되지 않는) 다른 카드가 이번 턴에 자리가 밀렸다면, 캡처된 카드가
+    // "부딪히는"(그래서 화면에 충격 이펙트가 뜨고 "이 카드는 빠진다"는 신호를 주는) 첫
+    // 순간까지만 기다렸다가 그 빈자리를 채운다 - globalSweepStart(다른 페이즈까지 다 끝난
+    // 뒤, 훨씬 나중일 수 있음)까지 기다리게 하면, 정작 이 카드와 무관한 다른 페이즈 때문에
+    // 화면에 아무 설명 없이 한참(경우에 따라 1초 넘게) 얼어있다가 막판에 갑자기 튀어
+    // 들어오는 것처럼 보인다("피가 왼쪽에서 날아온다"는 증상의 정체가 이거였다) - 손패든
+    // 덱이든 먼저 부딪힌 쪽에서 이미 "이 자리가 빈다"는 신호가 충분히 나온 뒤이므로,
+    // 그 시점에 채워도 자연스럽다(손패가 캡처했으면 손패 쪽 신호를, 손패는 그냥 내고
+    // 덱만 캡처했으면 덱 쪽 신호를 기준으로 삼는다).
+    const firstHitTime = handCaptures ? handHitTime : (deckCaptures ? deckHitTime : 0);
+    const lastDepartureStart = (handCaptures || deckCaptures) ? (HOLD + firstHitTime) : 0;
+
     document.querySelectorAll('.card[data-id]').forEach((elm) => {
+      const id = elm.dataset.id;
       const now = elm.getBoundingClientRect();
-      const old = oldRects.get(elm.dataset.id);
-      let dx = 0, dy = 0, isNew = false;
+      const old = oldRects.get(id);
+      let dx = 0, dy = 0, style = 'move', bombIndex = -1;
+      const primary = isPrimaryMover(id);
+      const capturing = primary || willCapture(elm);
+
       if (old) {
         dx = old.left - now.left;
         dy = old.top - now.top;
-        if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
-      } else if (fallbackOriginRect) {
-        dx = fallbackOriginRect.left - now.left;
-        dy = fallbackOriginRect.top - now.top;
-        isNew = true;
+        if (Math.abs(dx) < 1 && Math.abs(dy) < 1) {
+          if (DEBUG_ANIM) logAnim('[anim]', id, 'unchanged, skip');
+          maybeFlashCapture(elm); maybeFlashFormed(elm); return;
+        }
+        // 이번 턴의 실제 행위자도 아니고 캡처되는 것도 아닌데 자리만 바뀐 카드 - .floor는
+        // justify-content:center로 가운데 정렬돼 있고 .hand-row도 마찬가지라, 카드 한 장이
+        // 추가되거나 빠지기만 해도 그 줄의 총 너비가 바뀌어 전혀 상관없는 다른 카드들까지
+        // (실측으로 확인: 한 턴에 최대 십수 장) 몇 px~수백 px씩 밀린다. 예전엔 이런 카드도
+        // 전부 flyCard(찌그러짐/충격링/히트스톱까지 포함한 무거운 6~9 keyframe 애니메이션)를
+        // 걸고 있어서 그 자체로 버벅임의 큰 원인이었지만, 반대로 **아예 애니메이션을 안 만들면**
+        // transform이 한 번도 안 걸린 채라 CSS 전환도 못 타서 카드가 슥 밀리는 대신 새
+        // 자리로 뚝 끊겨 순간이동해버린다("사라졌다 딴 데서 나타난다"로 보였던 원인이 이거다).
+        // 그래서 무거운 효과 없이 아주 짧고 가벼운(2-keyframe) 슬라이드만 살짝 얹어서,
+        // 성능 비용은 거의 그대로 두고 순간이동처럼 보이던 것만 없앤다.
+        if (!capturing) {
+          // 이 카드는 바닥에 그대로 남아있는데, 같은 월의 다른 카드가 이번에 캡처되어
+          // 빠져나가는 바람에(justify-content:center) 자리가 밀린 경우일 수 있다. 캡처되는
+          // 카드는 자기 짝과 부딪혀 스윕을 시작하는 시점(handSweepStart/deckSweepStart)까지는
+          // 실제로 안 움직이고 원래 자리에 가만히 "머물러 있는 척"만 하는데(flyCard의
+          // delay+fill:'both'), 이 남은 카드가 지연 없이 즉시 180ms 만에 새 자리로
+          // 미끄러져버리면 아직 안 떠난 캡처 카드의 자리를 먼저 밀고 들어와 버려 두 카드가
+          // 겹쳐 보인다. 그래서 바닥에서 뭔가 실제로 빠져나가기 시작하는 가장 늦은 시점
+          // (lastDepartureStart)까지 이 미끄러짐도 같이 기다린다.
+          const isFloorCard = Boolean(elm.closest('.floor'));
+          const ambientDelay = isFloorCard ? lastDepartureStart : 0;
+          if (DEBUG_ANIM) logAnim('[anim]', id, 'ambient reposition', { dx, dy, ambientDelay });
+          elm.classList.remove('pop');
+          // 이 엘리먼트에 이전 렌더에서 걸어둔 애니메이션(예: 캡처 비행)이 아직 안 끝났으면
+          // 취소한다 - flyCard/flyCardViaMeeting과 같은 이유(그 이전 애니메이션의 onfinish가
+          // 뒤늦게 불려서 지금은 그냥 자리만 옮기는 이 카드에 엉뚱하게 충격 이펙트가 발동하는
+          // 걸 막는다).
+          cancelPriorAnim(elm);
+          elm.animate(
+            [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'translate(0px, 0px)' }],
+            { duration: 180, easing: 'ease-out', delay: ambientDelay, fill: ambientDelay > 0 ? 'both' : 'none' },
+          );
+          return;
+        }
       } else {
-        return;
+        let origin = null;
+        if (evt.flippedCardId === id) {
+          origin = deckRect; style = 'deck'; deckTapped = true;
+        } else if (evt.drawnCardId === id) {
+          origin = deckRect; style = 'deck'; deckTapped = true;
+        } else if (evt.handCardId === id) {
+          origin = oldHandRowRects.get(evt.playerId) || deckRect; style = 'hand';
+        } else if (Array.isArray(evt.handCardIds) && evt.handCardIds.includes(id)) {
+          // 폭탄(bomb): 손패 3장이 한 번에 나가는 유일한 행동이라 단수 필드(handCardId)로는
+          // 표현이 안 돼 handCardIds 배열을 쓴다. 배열 안에서의 순서대로 조금씩 시차를 둬서
+          // (아래 flyCard 호출의 delay) 세 장이 동시에 뭉개지듯 나타나지 않고, 실제로 손에서
+          // 연달아 "탁탁탁" 내려치는 것처럼 보이게 한다.
+          origin = oldHandRowRects.get(evt.playerId) || deckRect; style = 'hand';
+          bombIndex = evt.handCardIds.indexOf(id);
+        }
+        if (!origin) {
+          if (DEBUG_ANIM) logAnim('[anim]', id, 'NO OLD RECT + NO ORIGIN -> instant, no animation');
+          return; // 출처를 특정할 수 없으면(새 판 초기 배분 등) pop 효과만 남긴다
+        }
+        dx = origin.left - now.left;
+        dy = origin.top - now.top;
+        if (DEBUG_ANIM) logAnim('[anim]', id, 'no old rect, origin=', style, { dx, dy });
       }
-      elm.style.transition = 'none';
-      elm.style.transform = `translate(${dx}px, ${dy}px) scale(${isNew ? 0.5 : 0.94}) rotate(${isNew ? -12 : -4}deg)`;
-      elm.style.zIndex = '30';
-      // eslint-disable-next-line no-unused-expressions
-      elm.offsetWidth; // 강제 리플로우
-      elm.style.transition = 'transform 0.32s cubic-bezier(.22,.85,.32,1.15)';
-      elm.style.transform = '';
-      elm.addEventListener('transitionend', () => { elm.style.zIndex = ''; }, { once: true });
+
+      // 역할에 따라 어느 페이즈에서 출발할지 정한다: 손패/폭탄 카드는 ①페이즈(즉시,
+      // 폭탄이면 카드마다 70ms씩 추가로 어긋남), 덱에서 뒤집힌 카드는 ②페이즈, 캡처되어
+      // 먹은패로 쓸려 들어가는(=primaryMover는 아니지만 willCapture인) 카드는 전역 스윕
+      // 시각(globalSweepStart)에 맞춰 출발한다. 그 외(레이아웃이 밀려 몇 px 이동한 무관한
+      // 카드)는 그냥 즉시 조용히 미끄러진다.
+      let delay;
+      if (style === 'deck') delay = deckPhaseStart;
+      else if (bombIndex > 0) delay = bombIndex * 70;
+      else if (!primary && willCapture(elm)) delay = globalSweepStart;
+      else if (primary && id === evt.handCardId && isJjokPair) {
+        // "쪽": 이 손패 카드는 만날 바닥 짝이 없어서(=경유 지점이 없어서) 그냥 즉시
+        // 출발하면 덱 카드보다 훨씬 먼저 도착해버린다 - 도착 시각이 덱 카드와 같아지도록
+        // (경유 없이 곧장 최종 위치로) 출발을 늦춘다.
+        delay = Math.max(0, deckHitTime - approachDurFor(style));
+      } else delay = 0;
+
+      // 손패로 낸 카드/덱에서 뒤집은 카드가 실제로 캡처된다면(=바닥에 짝이 있었다면),
+      // 곧바로 내 먹은패로 직행하지 않는다: 먼저 "공용 필드"의 그 짝이 있던 자리까지
+      // 날아가 거기서 탁 소리와 함께 부딪히고, 다른 페이즈의 캡처까지 전부 끝날 때까지
+      // 잠깐 머물다가, 그제서야 이번 턴에 맞춰진 카드들과 다 함께 내 먹은패로 마저 쓸려
+      // 들어간다(flyCardViaMeeting, 단일 애니메이션). 짝이 없는 그냥 내기(place)는
+      // 원래대로 한 번에 곧장 최종 위치까지 간다(flyCard).
+      const viaRect = primary && !(bombIndex > 0)
+        ? (style === 'deck' ? deckViaRect : (id === evt.handCardId ? handViaRect : null))
+        : null;
+
+      let anim;
+      if (viaRect) {
+        const viaDx = viaRect.left - now.left;
+        const viaDy = viaRect.top - now.top;
+        // 이 카드 자신은 이미 부딪혔어도(delay+approachDur 시점), 다른 페이즈(예: 손패는
+        // 부딪혔지만 덱은 아직 안 뒤집힌 경우)가 마저 끝날 때까지는 먹은패로 안 쓸려가고
+        // 부딪힌 자리에서 대기한다 - waitMs가 그 대기 시간이다.
+        const waitMs = Math.max(0, globalSweepStart - (delay + approachDurFor(style)));
+        if (DEBUG_ANIM) logAnim('[anim]', id, 'flyCardViaMeeting', { style, delay, dx, dy, viaDx, viaDy, waitMs });
+        anim = flyCardViaMeeting(elm, dx, dy, style, delay, viaDx, viaDy, waitMs);
+      } else {
+        if (DEBUG_ANIM) logAnim('[anim]', id, 'flyCard', { style, delay, dx, dy, primary });
+        anim = flyCard(elm, dx, dy, style, delay, primary);
+      }
+      if (primary || willCapture(elm)) primaryAnims.push(anim);
     });
+
+    // 덱에서 뒤집은 카드가 바닥의 2장과 매치되는 드문 경우(NEED_CHOICE2), 선택이 끝나기 전에
+    // 미리 보내는 'deck_reveal' 중계 이벤트는 그 카드가 아직 floor/captured 어디에도 실제로
+    // 렌더링되지 않은 상태다(선택 대기 중이라 pendingChoice2 안에 떠 있을 뿐). 그래서 위 루프의
+    // deckTapped는 매치할 카드 엘리먼트를 못 찾아 계속 false로 남는데, 그렇다고 더미 들썩임
+    // 애니메이션까지 안 나가면 "구경하는 사람도 바로 보게 한다"는 이 이벤트의 존재 의의가
+    // 사라진다. 그래서 카드 엘리먼트를 못 찾았어도 evt 자체에 flippedCardId/drawnCardId가
+    // 있으면(=덱에서 뭔가 뒤집힌 게 맞으면) 더미 들썩임만큼은 항상 재생한다.
+    const deckEventPending = Boolean(evt.flippedCardId || evt.drawnCardId);
+    if ((deckTapped || deckEventPending) && deckStack) {
+      // 더미 들썩임도 실제 덱 카드가 날아가기 시작하는 ②페이즈 시점에 맞춰 지연시킨다 -
+      // 안 그러면 손패 페이즈가 아직 진행 중인데 더미가 먼저 들썩여서 순서가 어긋나 보인다.
+      setTimeout(() => {
+        deckStack.classList.remove('flipping');
+        // eslint-disable-next-line no-unused-expressions
+        deckStack.offsetWidth;
+        deckStack.classList.add('flipping');
+      }, deckPhaseStart);
+    }
+
+    // 배너/효과음/보드 흔들기는 카드가 실제로 다 착지한 뒤에 재생한다(위 primaryAnims 주석
+    // 참고). 이번 렌더에 날아온 카드가 하나도 없는 이벤트(고/스톱 선언처럼 새로 이동하는
+    // 카드가 없는 경우)는 primaryAnims가 비어 있으므로 Promise.all([])이 바로 다음
+    // 마이크로태스크에서 풀려 사실상 즉시 재생된다.
+    if (isNewGameEvent && evt.kind) {
+      Promise.all(primaryAnims.map((a) => a.finished.catch(() => {}))).then(() => handleGameEvent(evt));
+    }
   });
 }
 
 // ---------- 사운드 ----------
 // 실제로 녹음/제작된 효과음 파일(public/assets/audio/*.mp3, CC0 - "uisfx" 패키지)과
 // 저음을 더해주는 합성음을 함께 재생해서 카드가 "탁!" 떨어지는 타격감을 낸다.
+
+// 효과음 전체 켜기/끄기. 게임 판단(서버 상태)과는 무관한, 순전히 이 브라우저에서의
+// 개인 설정이라 localStorage에 저장해도 안전하다(다음에 열어도 그대로 유지됨).
+let soundMuted = false;
+try { soundMuted = localStorage.getItem('gostop_muted') === '1'; } catch (e) { /* 무시 */ }
+
 let audioCtx = null;
 function ensureAudio() {
   if (!audioCtx) {
@@ -142,6 +1040,7 @@ function ensureAudio() {
 document.addEventListener('click', () => ensureAudio(), { once: true });
 
 function beep(freq, duration, { type = 'sine', gain = 0.15, delay = 0 } = {}) {
+  if (soundMuted) return;
   try {
     const ctx = ensureAudio();
     const osc = ctx.createOscillator();
@@ -160,6 +1059,7 @@ function beep(freq, duration, { type = 'sine', gain = 0.15, delay = 0 } = {}) {
 
 const sfxCache = {};
 function playSfx(file, { volume = 0.6, rate = 1, delay = 0 } = {}) {
+  if (soundMuted) return;
   const fire = () => {
     try {
       let base = sfxCache[file];
@@ -177,23 +1077,52 @@ function playSfx(file, { volume = 0.6, rate = 1, delay = 0 } = {}) {
   else fire();
 }
 
-// 카드가 손에서 바닥/더미로 "탁!" 떨어지는 느낌: 실제 녹음된 스냅 소리 + 저음 합성음을 겹친다
+// 카드가 손에서 바닥/더미로 "탁!" 떨어지는 느낌: 실제 카드를 테이블에 내려놓는 걸 그대로
+// 녹음한 샘플(card-slap-real.mp3, Freesound.org "card.wav" by Zaxtor99, CC0) + 저음
+// 합성음 하나만 겹친다. 예전엔 UI 클릭음 팩(card-snap.mp3)에 화이트노이즈 크랙까지 층층이
+// 합성해서 흉내내봤지만, "전자음이 지저분하게 섞인 소리"라는 피드백을 받았다 - 애초에
+// 범용 UI 클릭 효과음이었던 걸 합성으로 아무리 다듬어도 "카드가 테이블에 놓이는 소리"
+// 자체가 될 수는 없었다. 실제로 카드를 내려놓아서 녹음한 샘플 하나를 그대로 쓰는 편이
+// 훨씬 정직하고 "카드답게" 들린다. 이제 이 함수가 실제로 낸/뒤집은/뽑은/폭탄 카드에만
+// (flyCard의 primaryMover) 불리므로, 캡처로 딸려가는 카드까지 겹쳐 울릴 걱정 없이 한
+// 턴에 한두 번만 또렷하게 재생된다.
 function cardSlap(delay = 0) {
-  playSfx('card-snap.mp3', { volume: 0.7, delay });
-  beep(115, 0.09, { type: 'sine', gain: 0.2, delay });
+  playSfx('card-slap-real.mp3', { volume: 1, rate: 0.95, delay });
+  beep(90, 0.12, { type: 'sine', gain: 0.24, delay });
 }
 
+// 카드 착지 타격음(cardSlap)은 flyCard의 anim.onfinish에서 이번 턴의 실제 행위자 카드에만
+// 직접, 실제로 착지하는 정확한 타이밍에 재생된다(animateNewCards 참고). 그래서 여기 SOUND
+// 맵에서 이벤트마다 따로 cardSlap()을 또 부르면 같은 "탁" 소리가 중복으로 겹쳐 울린다.
+// 아래 항목들은 그 착지음 위에 "이 사건이 정확히 무엇인지"를 구분해주는 효과음만 남긴다.
+// 예외 두 가지: shake(흔들기)는 새로 날아오는 카드가 없는 행동이라 착지음 자체가 아예
+// 안 나므로 수동으로 3연타를 흉내내고, bomb(폭탄)은 손패 3장이 handCardIds로 시차를
+// 두고 착지하면서 이미 자연스럽게 "탁.. 탁.. 탁"이 울리므로 저음 강조만 더한다.
 const SOUND = {
-  place: () => cardSlap(),
-  capture: () => { cardSlap(); playSfx('capture-check.mp3', { volume: 0.5, delay: 0.06 }); },
-  jjok: () => { cardSlap(); playSfx('ui-click.mp3', { volume: 0.55, delay: 0.07 }); },
-  ppeok: () => { cardSlap(); playSfx('ppeok.mp3', { volume: 0.65, delay: 0.03 }); },
-  ttadak: () => { cardSlap(0); cardSlap(0.1); playSfx('ttadak.mp3', { volume: 0.6, delay: 0.02 }); },
-  sweep: () => { cardSlap(); playSfx('sweep.mp3', { volume: 0.75, delay: 0.06 }); },
-  bomb: () => { cardSlap(0); cardSlap(0.05); cardSlap(0.1); beep(80, 0.35, { type: 'square', gain: 0.2, delay: 0.1 }); },
+  // 그냥 내려놓기(짝 없음): 착지 타격음(cardSlap)이 이제 매 착지마다 이미 재생되므로,
+  // 여기서 card-drop.mp3를 또 얹으면 오히려 소리가 흐려진다. 이 이벤트만의 특별한 추가
+  // 효과음은 없다(그게 바로 "그냥 내려놓기"의 정의이기도 하다).
+  place: () => {},
+  // 카드 짝 맞추기: "찰칵(체크) + 성공 챠임"을 겹쳐서 짝이 맞았다는 게 확실히 들리도록 한다
+  capture: () => {
+    playSfx('capture-check.mp3', { volume: 0.5, delay: 0.06 });
+    playSfx('match-success.mp3', { volume: 0.5, delay: 0.15 });
+  },
+  jjok: () => { playSfx('ui-click.mp3', { volume: 0.55, delay: 0.07 }); playSfx('match-success.mp3', { volume: 0.55, delay: 0.16 }); },
+  ppeok: () => { playSfx('ppeok.mp3', { volume: 0.65, delay: 0.03 }); },
+  // 뻑 해소: 쌓여서 잠겨있던 패 더미가 "풀리는" 느낌으로 뻑 성립과는 다른 소리를 쓴다
+  ppeokResolved: () => { playSfx('ppeok-resolved.mp3', { volume: 0.7, delay: 0.03 }); playSfx('match-success.mp3', { volume: 0.5, delay: 0.18 }); },
+  ttadak: () => { playSfx('ttadak.mp3', { volume: 0.6, delay: 0.02 }); playSfx('match-success.mp3', { volume: 0.55, delay: 0.2 }); },
+  sweep: () => { playSfx('sweep.mp3', { volume: 0.75, delay: 0.06 }); },
+  // 손패 3장이 handCardIds 순서대로 시차(0/70/140ms)를 두고 착지하면서 각자 cardSlap을
+  // 직접 재생하므로, 여기서는 그 위에 겹쳐 울릴 낮고 묵직한 "쿵" 강조음만 더한다
+  // (마지막 카드가 착지하는 시점 근처에 맞춘 지연).
+  bomb: () => { beep(80, 0.35, { type: 'square', gain: 0.22, delay: 0.15 }); },
   shake: () => { [0, 0.09, 0.18].forEach((d) => cardSlap(d)); },
   go: () => playSfx('go.mp3', { volume: 0.7 }),
   win: () => playSfx('win.mp3', { volume: 0.8 }),
+  // 보너스패: "예상치 못한 추가 보상"에 정확히 맞는 전용 효과음으로 교체
+  bonus: () => { playSfx('bonus-reveal.mp3', { volume: 0.75, delay: 0.06 }); },
 };
 
 // 버튼 클릭마다 가벼운 UI 클릭음을 더해 조작감을 살린다 (게임 이벤트 효과음과는 별도)
@@ -204,11 +1133,12 @@ document.addEventListener('click', (e) => {
 const EVENT_LABEL = {
   jjok: '쪽!', ppeok_formed: '뻑!', ppeok_resolved: '뻑 해소!', ttadak: '따닥!',
   sweep: '싹쓸이!!', bomb: '폭탄!!', shake: '흔들기!', go: '고!', win: '승리!',
+  bonus_hand: '보너스! (피 획득 + 한 장 더)', bonus_deck: '보너스 카드 획득!',
 };
 const EVENT_SOUND = {
-  jjok: 'jjok', ppeok_formed: 'ppeok', ppeok_resolved: 'ppeok', ttadak: 'ttadak',
+  jjok: 'jjok', ppeok_formed: 'ppeok', ppeok_resolved: 'ppeokResolved', ttadak: 'ttadak',
   sweep: 'sweep', bomb: 'bomb', shake: 'shake', go: 'go', win: 'win',
-  capture: 'capture', place: 'place',
+  capture: 'capture', place: 'place', bonus_hand: 'bonus', bonus_deck: 'bonus',
 };
 
 function showBanner(text) {
@@ -230,12 +1160,24 @@ function shakeBoard() {
   board.classList.add('shake');
 }
 
+// 폭탄/싹쓸이의 큰 흔들림(shakeBoard)보다 훨씬 작은, 일반 캡처용 "톡" 흔들림. 예전에는 폭탄/
+// 싹쓸이 말고는 보드 전체가 아무 반응이 없어서, 훨씬 자주 벌어지는 평범한 캡처(쪽/따닥/뻑
+// 해소 포함)에서는 카드 한 장의 반짝임 말고는 판 전체에 아무 타격감도 없었다.
+function nudgeBoard() {
+  const board = document.querySelector('.board');
+  if (!board) return;
+  board.classList.remove('nudge');
+  void board.offsetWidth;
+  board.classList.add('nudge');
+}
+
 function handleGameEvent(evt) {
   const label = EVENT_LABEL[evt.kind];
   if (label) showBanner(`${evt.playerName ? evt.playerName + ' ' : ''}${label}`);
   const soundKey = EVENT_SOUND[evt.kind];
   if (soundKey && SOUND[soundKey]) SOUND[soundKey]();
   if (evt.kind === 'bomb' || evt.kind === 'sweep') shakeBoard();
+  else if (['capture', 'jjok', 'ttadak', 'ppeok_resolved', 'ppeok_formed'].includes(evt.kind)) nudgeBoard();
 }
 
 // ---------- 화면 전환 ----------
@@ -264,6 +1206,39 @@ el('btn-join').addEventListener('click', () => {
   });
 });
 
+// 입력칸에서 엔터를 치면 버튼을 누른 것처럼 바로 제출되게 한다. 지금까지는 마우스로
+// 버튼을 직접 눌러야만 동작해서, 방 코드를 입력하고 엔터를 쳐도 아무 반응이 없어 헷갈렸다.
+function submitOnEnter(inputIds, buttonId) {
+  inputIds.forEach((id) => {
+    el(id).addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') el(buttonId).click();
+    });
+  });
+}
+submitOnEnter(['create-name'], 'btn-create');
+submitOnEnter(['join-code', 'join-name'], 'btn-join');
+
+// 방 코드는 원래 공백 없이 5글자인데, 붙여넣기로 앞뒤에 공백이 딸려 들어오면(흔한 실수)
+// 브라우저가 maxlength를 "붙여넣은 문자열 그대로"에 적용해버려서, 공백이 글자 수를 먼저
+// 차지하고 정작 중요한 코드 글자가 통째로 잘려나갈 수 있다. paste 이벤트를 가로채서
+// 공백부터 제거한 뒤 직접 넣어주면 이 문제를 원천적으로 피할 수 있다(index.html의
+// maxlength도 이런 실수에 대비해 여유 있게 잡아둠). 타이핑 중에도 실시간으로 대문자/공백
+// 정리를 해서 "제출해야 비로소 대문자로 바뀌는" 것보다 더 즉각적인 피드백을 준다.
+function cleanRoomCodeInput(text) {
+  return text.replace(/\s+/g, '').toUpperCase().slice(0, 5);
+}
+el('join-code').addEventListener('input', (e) => {
+  const clean = cleanRoomCodeInput(e.target.value);
+  if (clean !== e.target.value) e.target.value = clean;
+});
+el('join-code').addEventListener('paste', (e) => {
+  const text = (e.clipboardData || window.clipboardData)?.getData('text') || '';
+  e.preventDefault();
+  e.target.value = cleanRoomCodeInput(text);
+});
+submitOnEnter(['point-value-input'], 'btn-set-point');
+submitOnEnter(['point-value-input-game'], 'btn-set-point-game');
+
 function onJoined(code, playerId) {
   roomCode = code;
   myId = playerId;
@@ -271,20 +1246,36 @@ function onJoined(code, playerId) {
   history.replaceState(null, '', `?room=${code}`);
 }
 
-// 새로고침 대비 자동 재접속
-(function tryRejoin() {
+// 새로고침뿐 아니라 "페이지는 그대로인데 소켓 연결만 잠깐 끊겼다가 자동 재연결되는" 경우에도
+// 재접속을 다시 시도해야 한다. Socket.io는 끊기면 새 socket.id로 자동 재연결하는데, 그때마다
+// 서버는 완전히 새로운 연결로 취급한다(socketMeta에 이 새 id가 등록돼 있지 않음). 그래서
+// 'connect' 시점마다(최초 접속이든 와이파이 끊김 후 자동 재연결이든) room:rejoin을 다시 보내지
+// 않으면, 화면은 그대로인데 이 클라이언트가 보내는 모든 game:* 요청이 서버에서 "방을 찾을 수
+// 없습니다"로 조용히 실패하는 상태가 되어(새로고침 전까지는 원인도 알 수 없이) 게임이 먹통이 된다.
+function tryRejoin() {
   const params = new URLSearchParams(location.search);
   const roomParam = params.get('room');
   const saved = JSON.parse(localStorage.getItem('gostop') || 'null');
   if (saved && (!roomParam || roomParam === saved.roomCode)) {
     socket.emit('room:rejoin', saved, (res) => {
-      if (res.ok) onJoined(res.roomCode, res.playerId);
-      else if (roomParam) el('join-code').value = roomParam;
+      if (res.ok) {
+        onJoined(res.roomCode, res.playerId);
+        return;
+      }
+      // 재입장 실패는 "이 방/플레이어는 더 이상 유효하지 않다"는 확정적인 신호다(호스트가
+      // 방을 폭파했거나, 서버가 재시작되어 메모리 속 방 목록이 초기화된 경우 등). room:leave
+      // 성공 시나 room:destroyed 수신 시에는 이미 localStorage를 지우는데, 이 실패 경로만
+      // 빠져 있어서, 낡은 방 정보를 지우지 않으면 와이파이가 잠깐 끊겼다 자동 재연결될
+      // 때마다(그때마다 tryRejoin이 다시 불림) 이미 없는 방으로 계속 조용히 재입장을
+      // 재시도하게 된다.
+      localStorage.removeItem('gostop');
+      if (roomParam) el('join-code').value = roomParam;
     });
   } else if (roomParam) {
     el('join-code').value = roomParam;
   }
-})();
+}
+socket.on('connect', tryRejoin);
 
 // ---------- 대기방 ----------
 el('btn-set-point').addEventListener('click', () => {
@@ -308,6 +1299,55 @@ function destroyRoom() {
 }
 el('btn-destroy-room-lobby').addEventListener('click', destroyRoom);
 el('btn-destroy-room').addEventListener('click', destroyRoom);
+
+// 대기방에서 나가기 (게임이 시작되기 전에만 가능 - 서버에서도 동일하게 막아준다)
+el('btn-leave-room').addEventListener('click', () => {
+  if (!confirm('방에서 나갈까요?')) return;
+  socket.emit('room:leave', {}, (res) => {
+    if (!res.ok) return alert(res.error);
+    localStorage.removeItem('gostop');
+    roomCode = null;
+    myId = null;
+    history.replaceState(null, '', location.pathname);
+    goScreen('lobby');
+  });
+});
+
+// 초대 링크 복사: 방 코드를 말로 불러줄 필요 없이 URL 하나로 바로 참가할 수 있게 한다
+el('btn-copy-invite').addEventListener('click', async () => {
+  const url = `${location.origin}${location.pathname}?room=${roomCode}`;
+  const btn = el('btn-copy-invite');
+  const original = btn.textContent;
+  try {
+    await navigator.clipboard.writeText(url);
+    btn.textContent = '복사됨!';
+  } catch (e) {
+    // 클립보드 권한이 없는 환경(오래된 브라우저, http 등)에서는 알림으로라도 보여준다
+    window.prompt('아래 링크를 복사해서 공유하세요', url);
+    btn.textContent = original;
+    return;
+  }
+  setTimeout(() => { btn.textContent = original; }, 1500);
+});
+
+// 효과음 켜기/끄기 (브라우저별 개인 설정, localStorage에 저장)
+function updateMuteButton() {
+  const btn = el('btn-mute');
+  if (!btn) return;
+  btn.textContent = soundMuted ? '🔇' : '🔊';
+  btn.title = soundMuted ? '효과음 꺼짐 (클릭해서 켜기)' : '효과음 켜짐 (클릭해서 끄기)';
+}
+el('btn-mute').addEventListener('click', () => {
+  soundMuted = !soundMuted;
+  try { localStorage.setItem('gostop_muted', soundMuted ? '1' : '0'); } catch (e) { /* 무시 */ }
+  updateMuteButton();
+});
+updateMuteButton();
+
+// 초심자용 규칙 가이드: 대기방/게임 화면 양쪽에서 열 수 있고 닫는 방법도 동일하다
+el('btn-rules-lobby').addEventListener('click', () => showModal('modal-rules'));
+el('btn-rules-game').addEventListener('click', () => showModal('modal-rules'));
+el('rules-close').addEventListener('click', () => hideModal('modal-rules'));
 
 socket.on('room:destroyed', () => {
   localStorage.removeItem('gostop');
@@ -362,13 +1402,14 @@ function renderGame(state) {
     const header = document.createElement('div');
     header.className = 'opp-header';
     header.innerHTML = `
-      <span class="name">${meta?.name || '???'}${meta?.connected ? '' : ' (끊김)'}</span>
-      <span class="opp-score">${p.score}점${badges ? ' · ' + badges : ''}</span>
+      <span class="name">${escapeHtml(meta?.name || '???')}${meta?.connected ? '' : ' (끊김)'}</span>
+      <span class="opp-score">${p.score}점${badges ? ' · ' + escapeHtml(badges) : ''}</span>
     `;
     box.appendChild(header);
 
     const handRow = document.createElement('div');
     handRow.className = 'opp-hand-row';
+    handRow.dataset.playerId = p.id; // 상대가 낸 카드가 "이 손에서" 나가는 애니메이션의 출발점 계산용
     for (let i = 0; i < p.handCount; i++) handRow.appendChild(cardBackEl(true));
     if (p.handCount === 0) {
       const empty = document.createElement('span');
@@ -380,7 +1421,7 @@ function renderGame(state) {
 
     const anyCaptured = ['gwang', 'yeolkkeut', 'tti', 'pi'].some((t) => p.captured[t].length > 0);
     if (anyCaptured) {
-      box.appendChild(capturedGroups(p.captured, { mini: true }));
+      box.appendChild(capturedGroups(p.captured, { mini: true, cacheKey: `opp-${p.id}` }));
     } else {
       const empty = document.createElement('div');
       empty.className = 'opp-empty-label';
@@ -396,30 +1437,53 @@ function renderGame(state) {
   const isMyTurn = round.currentActor === myId && round.phase === 'playing';
   el('turn-indicator').textContent = isMyTurn ? '내 차례!' : `${state.players.find((p) => p.id === round.currentActor)?.name || ''}님 차례`;
 
+  // 바닥에 같은 월 카드가 여러 장 있으면(뻑 더미 등) 살짝 겹쳐서 한 무더기처럼 보이게 묶는다
   const floorDiv = el('floor');
   floorDiv.innerHTML = '';
+  const floorByMonth = new Map();
   round.floor.forEach((c) => {
-    const onClick = isMyTurn && selectedHandCardId ? () => tryPlay(selectedHandCardId, c.id) : null;
-    floorDiv.appendChild(cardEl(c, { onClick }));
+    if (!floorByMonth.has(c.month)) floorByMonth.set(c.month, []);
+    floorByMonth.get(c.month).push(c);
+  });
+  [...floorByMonth.keys()].sort((a, b) => a - b).forEach((month) => {
+    const group = document.createElement('div');
+    group.className = 'floor-group';
+    floorByMonth.get(month).forEach((c, i) => {
+      const onClick = isMyTurn && selectedHandCardId ? () => tryPlay(selectedHandCardId, c.id) : null;
+      const cel = cardEl(c, { onClick });
+      if (i > 0) cel.style.marginLeft = '-46px';
+      group.appendChild(cel);
+    });
+    floorDiv.appendChild(group);
   });
 
   // 내 정보
   el('my-score').textContent = `내 점수: ${me.score}점`;
   const capRow = el('my-captured');
   capRow.innerHTML = '';
-  capRow.appendChild(capturedGroups(me.captured));
+  capRow.appendChild(capturedGroups(me.captured, { interactive: true, cacheKey: 'me' }));
 
+  // 폭탄을 낸 다음 순번(들)은 "손패 내기 없이 덱만 뒤집기"인데, 이건 손패가 완전히 빈
+  // 경우만이 아니라 폭탄으로 3장만 빠지고 카드가 더 남아있는 경우에도 똑같이 적용된다
+  // (서버 room.js의 playCard가 skipNextHandPlay>0이면 cardId를 아예 무시하고 덱만 뒤집기
+  // 때문). 이걸 몰랐던 예전 버전은 손패가 남아있으면 평소처럼 클릭할 수 있게 놔둬서,
+  // 플레이어가 카드를 골라 냈다고 생각해도 서버가 조용히 무시하고 그 카드는 그대로
+  // 손에 남은 채 덱만 뒤집혀버리는 혼란스러운 버그가 있었다. 스킵 빚이 있는 동안에는
+  // 손패를 눌러도 아무 일도 일어나지 않게 막고, 전용 버튼으로만 진행하게 한다.
+  const hasSkipDebt = (me.skipNextHandPlay || 0) > 0;
   const handRow = el('my-hand');
   handRow.innerHTML = '';
-  round.myHand.forEach((c) => {
+  sortedHand(round.myHand).forEach((c) => {
     const div = cardEl(c, {
       selected: c.id === selectedHandCardId,
       onClick: () => {
-        if (!isMyTurn) return;
+        if (!isMyTurn || hasSkipDebt) return;
+        if (c.type === 'bonus') { playBonus(c.id); return; }
         selectedHandCardId = c.id;
         tryPlay(c.id);
       },
     });
+    if (isMyTurn && hasSkipDebt) div.classList.add('unplayable');
     handRow.appendChild(div);
   });
 
@@ -432,29 +1496,36 @@ function renderGame(state) {
 
   if (isMyTurn && shakeable.length) show('btn-shake'); else hide('btn-shake');
   if (isMyTurn && bombable.length) show('btn-bomb'); else hide('btn-bomb');
-  el('btn-shake').onclick = () => openMonthModal('modal-shake', 'shake-options', shakeable.map(([m]) => Number(m)), (month) => {
-    socket.emit('game:declareShake', { month }, (res) => { if (!res.ok) alert(res.error); });
-    hide('modal-shake');
-  });
-  el('btn-bomb').onclick = () => openMonthModal('modal-bomb', 'bomb-options', bombable.map(([m]) => Number(m)), (month) => {
-    socket.emit('game:playBomb', { month }, (res) => { if (!res.ok) alert(res.error); });
-    hide('modal-bomb');
-  });
+
+  // 폭탄 직후 스킵 턴(손패가 완전히 비었든, 카드가 더 남아있든 상관없이 서버가 손패 내기
+  // 자체를 받지 않음)에는 전용 버튼으로만 "덱만 뒤집기"를 진행할 수 있게 한다.
+  const needsSkipHandButton = isMyTurn && hasSkipDebt;
+  if (needsSkipHandButton) show('btn-skip-hand'); else hide('btn-skip-hand');
+  el('btn-shake').onclick = () => openMonthModal('modal-shake', 'shake-options',
+    shakeable.map(([m]) => monthSampleCard(round.myHand, Number(m))), (month) => {
+      socket.emit('game:declareShake', { month }, (res) => { if (!res.ok) alert(res.error); });
+      hideModal('modal-shake');
+    });
+  el('btn-bomb').onclick = () => openMonthModal('modal-bomb', 'bomb-options',
+    bombable.map(([m]) => monthSampleCard(round.myHand, Number(m))), (month) => {
+      socket.emit('game:playBomb', { month }, (res) => { if (!res.ok) alert(res.error); });
+      hideModal('modal-bomb');
+    });
 
   // 고/스톱 모달
   if (round.pendingGoStop && round.pendingGoStop.playerId === myId) {
     el('gostop-score-label').textContent = `현재 ${round.pendingGoStop.score.total}점입니다. 고 하시겠습니까?`;
-    show('modal-gostop');
+    showModal('modal-gostop');
   } else {
-    hide('modal-gostop');
+    hideModal('modal-gostop');
   }
 
   // 라운드 종료 모달
   if (round.phase === 'round-end' && round.lastResult) {
     renderResult(round.lastResult, state, myPlayerMeta?.isHost);
-    show('modal-result');
+    showModal('modal-result');
   } else {
-    hide('modal-result');
+    hideModal('modal-result');
   }
 
   // 호스트 컨트롤: 방 폭파는 언제나, 판 무효/점당 금액 조정은 라운드 진행 중에만
@@ -472,13 +1543,21 @@ function renderGame(state) {
     hide('host-round-controls');
   }
 
-  // 새 이벤트(뻑/따닥/폭탄 등) 연출 - 처음 접속/새로고침 시점의 과거 이벤트는 재생하지 않음
+  // 새 이벤트(뻑/따닥/폭탄 등) 연출이 있었는지만 확인해서 반환한다. 예전에는 여기서 곧장
+  // handleGameEvent(효과음+배너+흔들기)를 재생했지만, 이 시점은 "서버 상태가 막 갱신된
+  // 순간"일 뿐 "카드가 화면에 실제로 도착한 순간"이 아니다. 카드가 날아오는 애니메이션은
+  // 이 함수가 끝난 뒤 animateNewCards가 별도로(그것도 requestAnimationFrame 한 틱 뒤에)
+  // 재생하기 때문에, 소리/배너를 여기서 바로 재생하면 카드보다 300~500ms 먼저 터져버려서
+  // "때리는 느낌"이 아니라 "따로 노는 느낌"이 났다. 그래서 실제 재생은 호출부
+  // (socket.on('room:state', ...))가 이 반환값을 animateNewCards에 넘겨서, 카드가 착지하는
+  // 시점(Animation.finished)에 정확히 맞춰 재생하도록 미룬다.
+  let isNewGameEvent = false;
   if (!eventSeqInitialized) {
     lastSeenEventSeq = round.lastEvent?.seq || 0;
     eventSeqInitialized = true;
   } else if (round.lastEvent && round.lastEvent.seq > lastSeenEventSeq) {
     lastSeenEventSeq = round.lastEvent.seq;
-    handleGameEvent(round.lastEvent);
+    isNewGameEvent = true;
   }
 
   // 정산 바
@@ -494,8 +1573,10 @@ function renderGame(state) {
 
   // 로그
   const logDiv = el('log-feed');
-  logDiv.innerHTML = state.log.map((l) => `<div>${l.message}</div>`).join('');
+  logDiv.innerHTML = state.log.map((l) => `<div>${escapeHtml(l.message)}</div>`).join('');
   logDiv.scrollTop = logDiv.scrollHeight;
+
+  return isNewGameEvent;
 }
 
 function piValueOf(piCards) {
@@ -506,11 +1587,14 @@ function tryPlay(cardId, chosenFloorId) {
   socket.emit('game:playCard', { cardId, chosenFloorId }, (res) => {
     if (res.ok) {
       selectedHandCardId = null;
-      hide('modal-choice');
+      hideModal('modal-choice');
       return;
     }
     if (res.needChoice) {
       openChoiceModal(res.matches, (chosenId) => tryPlay(cardId, chosenId));
+    } else if (res.needChoice2) {
+      // 덱에서 뒤집은 카드가 바닥의 같은 월 2장과 매치되는 드문 경우: 어느 쪽과 짝지을지 선택
+      openChoiceModal(res.matches, (chosenId) => resolveChoice2(chosenId));
     } else {
       alert(res.error);
       selectedHandCardId = null;
@@ -518,30 +1602,55 @@ function tryPlay(cardId, chosenFloorId) {
   });
 }
 
+function resolveChoice2(chosenId) {
+  socket.emit('game:resolveChoice2', { chosenId }, (res) => {
+    selectedHandCardId = null;
+    hideModal('modal-choice');
+    if (!res.ok) alert(res.error);
+  });
+}
+
+// 보너스패를 손패에서 낸다: 상대 피 1장씩 받고 덱에서 한 장 더 뽑음. 턴은 안 끝나서
+// 이어서 정식으로 카드 한 장을 더 내야 한다(별도 안내 없이, 그냥 계속 내 차례로 보임).
+function playBonus(cardId) {
+  socket.emit('game:playBonus', { cardId }, (res) => {
+    if (!res.ok) alert(res.error);
+  });
+}
+
 function openChoiceModal(matches, onPick) {
   const box = el('choice-options');
   box.innerHTML = '';
   matches.forEach((c) => {
-    box.appendChild(cardEl(c, { onClick: () => { hide('modal-choice'); onPick(c.id); } }));
+    box.appendChild(cardEl(c, { onClick: () => { hideModal('modal-choice'); onPick(c.id); } }));
   });
-  show('modal-choice');
+  showModal('modal-choice');
 }
 
-function openMonthModal(modalId, optionsId, months, onPick) {
+// 흔들기/폭탄 대상 월을 대표하는 카드 한 장을 손패에서 찾는다(광/열끗/띠/피 순으로 우선).
+// 실제 카드 그림을 보여줘야 어떤 패인지 한눈에 알아보기 쉽다(텍스트로 "5월"만 있으면 헷갈림).
+function monthSampleCard(hand, month) {
+  return sortedHand(hand).find((c) => c.month === month);
+}
+
+function openMonthModal(modalId, optionsId, cards, onPick) {
   const box = el(optionsId);
   box.innerHTML = '';
-  months.forEach((m) => {
-    const btn = document.createElement('button');
-    btn.textContent = `${m}월`;
-    btn.style.padding = '10px 16px';
-    btn.addEventListener('click', () => onPick(m));
-    box.appendChild(btn);
+  cards.forEach((c) => {
+    if (!c) return;
+    box.appendChild(cardEl(c, { onClick: () => onPick(c.month) }));
   });
-  show(modalId);
+  showModal(modalId);
 }
 
-el('shake-cancel').addEventListener('click', () => hide('modal-shake'));
-el('bomb-cancel').addEventListener('click', () => hide('modal-bomb'));
+el('btn-skip-hand').addEventListener('click', () => {
+  // 스킵 턴 전용: 실제로 낼 손패가 없으므로 cardId 없이 보낸다(서버도 이 상태에서는
+  // cardId를 쓰지 않고 덱만 뒤집는다).
+  socket.emit('game:playCard', { cardId: null }, (res) => { if (!res.ok) alert(res.error); });
+});
+
+el('shake-cancel').addEventListener('click', () => hideModal('modal-shake'));
+el('bomb-cancel').addEventListener('click', () => hideModal('modal-bomb'));
 
 el('btn-go').addEventListener('click', () => socket.emit('game:goStop', { decision: 'go' }, (res) => { if (!res.ok) alert(res.error); }));
 el('btn-stop').addEventListener('click', () => socket.emit('game:goStop', { decision: 'stop' }, (res) => { if (!res.ok) alert(res.error); }));
@@ -560,6 +1669,14 @@ el('btn-next-round').addEventListener('click', () => {
   socket.emit('game:nextRound', {}, (res) => { if (!res.ok) alert(res.error); });
 });
 
+// 박 사유를 그냥 이름만 보여주면 왜 그게 붙었는지 알기 어려워서, 짧은 이유를 덧붙인다.
+const BAK_REASON_EXPLAIN = {
+  '광박': () => '광을 한 장도 못 먹음',
+  '피박': (piCount, piThreshold) => `피 ${piCount}장 (${piThreshold}장 이하)`,
+  '고박': () => '혼자 고를 선언하고 짐',
+  '독박': () => '이 족보를 완성시켜준 패를 혼자 다 냄',
+};
+
 function renderResult(result, state, isHost) {
   el('result-title').textContent =
     result.result === 'win' ? `🎉 ${result.winnerName}님 승리!` :
@@ -568,15 +1685,51 @@ function renderResult(result, state, isHost) {
   const body = el('result-body');
   if (result.result === 'win') {
     const s = result.settlement;
+    const d = s.base.detail;
+    const piThreshold = state.players.length === 2 ? 7 : 5; // server/engine.js computeSettlement과 동일 기준
+    // 호스트는 점당 금액을 phase 상관없이(라운드 종료 후, "다음 판 시작" 누르기 전에도)
+    // 바꿀 수 있다. 이 결과 화면은 이미 끝난 판의 지불액을 보여주는 것이므로, 그 사이
+    // 바뀌었을 수도 있는 "현재" state.pointValue가 아니라 실제로 이 판의 ledger 반영에
+    // 쓰인 값(pointValueAtSettlement, room.js의 finishRound가 정산 시점에 남겨둠)을 써야
+    // 화면 숫자가 항상 실제 ledger 변동액과 일치한다.
+    const pv = result.pointValueAtSettlement ?? state.pointValue;
+
+    const ttiFlags = [d.hongdan && '홍단', d.chodan && '초단', d.cheongdan && '청단'].filter(Boolean);
+    const breakdown = [
+      `광 ${d.gwangCount}장 (${s.base.gwangScore}점)`,
+      `띠 ${d.ttiCount}장 (${s.base.ttiScore}점${ttiFlags.length ? ' · ' + ttiFlags.join('·') : ''})`,
+      `열끗 ${d.yeolkkeutCount}장 (${s.base.yeolkkeutScore}점${d.godori ? ' · 고도리' : ''})`,
+      `피 ${d.piValue}장 (${s.base.piScore}점)`,
+    ].join(' · ');
+
     const rows = Object.entries(s.payments).map(([pid, pay]) => {
       const name = state.players.find((p) => p.id === pid)?.name || pid;
-      return `<tr><td>${name}</td><td>${pay.reasons.join(', ') || '-'}</td><td>-${Math.round(pay.amount * state.pointValue).toLocaleString()}원</td></tr>`;
+      const rp = state.round.players.find((p) => p.id === pid);
+      const piCount = rp ? piValueOf(rp.captured.pi) : 0;
+      const gwangCount = rp?.captured.gwang.length ?? 0;
+      const reasonText = pay.reasons.length
+        ? pay.reasons.map((r) => `${r}(${(BAK_REASON_EXPLAIN[r] || (() => ''))(piCount, piThreshold)})`).join(', ')
+        : '-';
+      const capturedText = `광 ${gwangCount}장 · 피 ${piCount}장`;
+      return `<tr><td>${escapeHtml(name)}</td><td>${escapeHtml(capturedText)}</td><td>${escapeHtml(reasonText)}</td><td>x${pay.multiplier}</td><td>-${Math.round(pay.amount * pv).toLocaleString()}원</td></tr>`;
     }).join('');
+
+    // 각 지불액을 원 단위로 반올림한 "뒤에" 더해야 한다. server/room.js의 finishRound()도
+    // 정확히 이 순서(패자별로 각각 Math.round(pay.amount * pointValue)를 계산한 뒤 그 값들을
+    // 승자 ledger에 합산)로 실제 돈을 정산한다. 여기서 raw amount를 먼저 합산하고
+    // "총합에" 한 번만 반올림해버리면(반올림 순서가 반대), 점당 금액이 정수가 아닌 경우
+    // (예: 100/3원처럼 나누어떨어지지 않는 값) 이 결과 화면의 "총 획득"이 실제 정산 막대
+    // (ledger-bar, state.ledger 기반)와 다른 숫자로 보일 수 있다.
+    const totalReceived = Object.values(s.payments)
+      .reduce((sum, p) => sum + Math.round(p.amount * pv), 0);
+
     body.innerHTML = `
-      <p>기본점 ${s.base.total}점 (광${s.base.gwangScore} 띠${s.base.ttiScore} 열${s.base.yeolkkeutScore} 피${s.base.piScore})
-      + 고 ${s.goCount}회(가산 ${s.goAddPoint}, 배율 x${s.goMultiplier}) · 흔들기/폭탄 배율 x${s.shakeBombMultiplier}
+      <p>${escapeHtml(breakdown)}<br/>
+      기본점 <b>${s.base.total}점</b>
+      + 고 ${s.goCount}회(가산 ${s.goAddPoint}점, 배율 x${s.goMultiplier}) · 흔들기/폭탄 배율 x${s.shakeBombMultiplier}
       = <b>${s.scoreBeforeBak}점</b></p>
-      <table><tr><th>플레이어</th><th>박</th><th>지불액</th></tr>${rows}</table>
+      <table><tr><th>플레이어</th><th>남은 패</th><th>박</th><th>배율</th><th>지불액</th></tr>${rows}</table>
+      <p class="muted">${escapeHtml(result.winnerName)}님 총 획득: +${totalReceived.toLocaleString()}원</p>
     `;
   } else {
     body.innerHTML = '<p>다음 판으로 넘어갑니다.</p>';
@@ -585,6 +1738,12 @@ function renderResult(result, state, isHost) {
 }
 
 // ---------- 소켓 상태 반영 ----------
+// 이 클라이언트가 게임 화면을 실제로 그린 적이 있는지 여부. 처음 접속/새로고침/재접속 직후의
+// 첫 렌더에서는 round.lastEvent가 "예전에 이미 일어난" 이벤트일 수 있는데, 그걸로
+// animateNewCards를 돌리면 화면에 있던 카드 중 하나가 뜬금없이 덱/손패에서 날아오는 것처럼
+// 보이는 오작동이 생긴다(배너/효과음은 eventSeqInitialized로 이미 막고 있었지만 이동 애니메이션은
+// 그 가드가 없었다). 첫 렌더에서는 이동 애니메이션 없이 pop 효과만 나오도록 건너뛴다.
+let hasRenderedGameOnce = false;
 socket.on('room:state', (state) => {
   if (!state.round) {
     latestState = state;
@@ -593,11 +1752,32 @@ socket.on('room:state', (state) => {
     return;
   }
 
-  // 리렌더 직전의 카드 위치를 기록해뒀다가, 리렌더 후 위치 변화만큼 되짚어 애니메이션 -> "집어서 옮기는" 느낌
+  // 새 상태가 도착했을 때 이전 턴의 카드 애니메이션이 아직 재생 중일 수 있다(캡처가 있으면
+  // 한 턴에 1초 넘게 걸리기도 하는데, 상대가 그보다 빨리 다음 수를 두면 겹친다 - 특히 혼자
+  // 두 탭을 오가며 테스트할 때 흔하다). 예전엔 여기서 document.getAnimations().forEach(a =>
+  // a.finish())로 진행 중인 애니메이션을 전부 즉시 끝내버렸는데, 이게 바로 "맞은 카드끼리
+  // 동시에 움직이는 구간이 안 보인다"는 증상의 진짜 원인이었다: 실측해보니 한 턴의 캡처
+  // 시퀀스가 다 끝나기도 전에(특히 손패+덱이 둘 다 걸린 턴은 1초 반 넘게 걸리는데) 다음
+  // 상태가 도착하는 일이 흔했고, 그때마다 아직 스윕을 시작하지도 않은 카드까지 전부 그
+  // 자리에서 최종 위치로 순간이동해버려서 - 정작 "다같이 쓸려 들어가는" 장면 자체를 한
+  // 번도 보여주지 못한 채 매번 잘려나가고 있었다.
+  //
+  // getBoundingClientRect()가 "날아가는 중"인 위치를 그대로 돌려준다는 점 자체는 FLIP
+  // 기법에 문제가 안 된다(그 카드가 "지금 실제로 있는 자리"에서 새 목적지까지의 거리만
+  // 정확하면 되므로) - 그래서 이제 여기서는 아무것도 강제로 끝내지 않고, 이번 렌더에서
+  // 실제로 새 애니메이션을 받을 그 카드 하나만(flyCard/flyCardViaMeeting 안에서) 자기
+  // 자신의 이전 애니메이션만 취소한다(다른 카드와 안 겹치게). 이번 턴과 무관한 카드는
+  // 이전 턴의 애니메이션이 방해받지 않고 원래 예정대로 끝까지 재생된다.
+
+  // 리렌더 직전의 카드/손패 줄 위치를 기록해뒀다가, 리렌더 후 위치 변화만큼 되짚어 애니메이션
+  // -> "손에서 나가서 바닥에 놓이거나 덱에서 뒤집혀 나오는" 것처럼 보이게 한다.
   const oldRects = captureCardRects();
+  const oldHandRowRects = captureHandRowRects();
+  const oldFloorIds = captureFloorCardIds();
+  const isFirstRender = !hasRenderedGameOnce;
   latestState = state;
   goScreen('game');
-  renderGame(state);
-  const deckStack = el('deck-stack');
-  runFlipAnimation(oldRects, deckStack ? deckStack.getBoundingClientRect() : null);
+  const isNewGameEvent = renderGame(state);
+  if (!isFirstRender) animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFloorIds);
+  hasRenderedGameOnce = true;
 });

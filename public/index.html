@@ -4,6 +4,8 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>고스톱</title>
+<!-- 별도 파비콘 파일 없이도 브라우저가 /favicon.ico를 요청해 무해한 404를 남기는 걸 막는다 -->
+<link rel="icon" href="data:," />
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -18,7 +20,10 @@
     </div>
     <div class="lobby-box">
       <h2>방 참가하기</h2>
-      <input id="join-code" placeholder="방 코드" maxlength="5" style="text-transform:uppercase" />
+      <!-- maxlength를 실제 방 코드 길이(5)보다 넉넉하게 잡는다: 복사-붙여넣기로 앞뒤에 공백이
+           딸려 들어오면 maxlength가 진짜 코드 글자보다 공백을 먼저 세버려서 코드 자체가
+           잘려나갈 수 있기 때문(자세한 정리는 client.js의 input/paste 핸들러가 담당). -->
+      <input id="join-code" placeholder="방 코드" maxlength="16" style="text-transform:uppercase" />
       <input id="join-name" placeholder="이름" maxlength="12" />
       <button id="btn-join">참가하기</button>
     </div>
@@ -30,6 +35,8 @@
   <div class="panel">
     <h2>방 코드: <span id="room-code-label"></span></h2>
     <p class="muted">이 코드를 친구들에게 알려주세요. (URL을 그대로 공유해도 됩니다)</p>
+    <button id="btn-copy-invite" type="button">초대 링크 복사</button>
+    <button id="btn-rules-lobby" type="button">규칙 보기</button>
     <ul id="room-player-list"></ul>
     <div id="host-controls" class="hidden">
       <label>점당 금액(원): <input id="point-value-input" type="number" min="0" step="10" /></label>
@@ -37,6 +44,7 @@
       <button id="btn-start">게임 시작</button>
       <button id="btn-destroy-room-lobby" class="danger-btn">방 폭파</button>
     </div>
+    <button id="btn-leave-room" type="button" class="danger-btn">나가기</button>
   </div>
 </div>
 
@@ -48,6 +56,8 @@
       <div id="deck-stack" class="deck-stack"><div></div><div></div><div></div></div>
       <span id="deck-count"></span>
       <span id="turn-indicator"></span>
+      <button id="btn-mute" type="button" class="mute-btn" title="효과음 켜기/끄기">🔊</button>
+      <button id="btn-rules-game" type="button" class="mute-btn" title="규칙 보기">❓</button>
     </div>
     <div id="floor" class="floor"></div>
   </div>
@@ -58,6 +68,7 @@
       <div class="my-actions">
         <button id="btn-shake" class="hidden">흔들기</button>
         <button id="btn-bomb" class="hidden">폭탄</button>
+        <button id="btn-skip-hand" class="hidden">이번 턴은 패를 못 냄 · 덱만 뒤집기</button>
       </div>
     </div>
     <div id="my-captured" class="captured-row"></div>
@@ -81,17 +92,17 @@
 <div id="score-popups"></div>
 
 <!-- 매치 선택 모달 -->
-<div id="modal-choice" class="modal hidden">
+<div id="modal-choice" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="choice-modal-title">
   <div class="modal-box">
-    <h3>어떤 카드와 맞출까요?</h3>
+    <h3 id="choice-modal-title">어떤 카드와 맞출까요?</h3>
     <div id="choice-options" class="choice-options"></div>
   </div>
 </div>
 
 <!-- 고/스톱 모달 -->
-<div id="modal-gostop" class="modal hidden">
+<div id="modal-gostop" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="gostop-modal-title">
   <div class="modal-box">
-    <h3>고(Go) 하시겠습니까?</h3>
+    <h3 id="gostop-modal-title">고(Go) 하시겠습니까?</h3>
     <p id="gostop-score-label"></p>
     <div class="modal-actions">
       <button id="btn-go">고!</button>
@@ -101,31 +112,69 @@
 </div>
 
 <!-- 흔들기 선택 모달 -->
-<div id="modal-shake" class="modal hidden">
+<div id="modal-shake" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="shake-modal-title">
   <div class="modal-box">
-    <h3>어느 월을 흔들까요?</h3>
+    <h3 id="shake-modal-title">어느 월을 흔들까요?</h3>
     <div id="shake-options" class="choice-options"></div>
     <button id="shake-cancel">취소</button>
   </div>
 </div>
 
 <!-- 폭탄 선택 모달 -->
-<div id="modal-bomb" class="modal hidden">
+<div id="modal-bomb" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="bomb-modal-title">
   <div class="modal-box">
-    <h3>어느 월로 폭탄을 낼까요?</h3>
+    <h3 id="bomb-modal-title">어느 월로 폭탄을 낼까요?</h3>
     <div id="bomb-options" class="choice-options"></div>
     <button id="bomb-cancel">취소</button>
   </div>
 </div>
 
 <!-- 라운드 결과 모달 -->
-<div id="modal-result" class="modal hidden">
+<div id="modal-result" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="result-title">
   <div class="modal-box wide">
     <h3 id="result-title"></h3>
     <div id="result-body"></div>
     <div id="result-host-actions" class="hidden">
       <button id="btn-next-round">다음 판 시작</button>
     </div>
+  </div>
+</div>
+
+<!-- 초심자용 규칙/족보 가이드 모달 -->
+<div id="modal-rules" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="rules-modal-title">
+  <div class="modal-box wide rules-box">
+    <h3 id="rules-modal-title">규칙 요약</h3>
+    <div class="rules-body">
+      <h4>승리 조건</h4>
+      <p>3인 이상은 3점, 2인(맞고)은 7점 이상을 먼저 만든 사람이 "스톱"을 선언하면 승리합니다. 조건을 채워도 "고"를 선언해 계속 진행할 수 있습니다.</p>
+
+      <h4>패 종류 &amp; 기본 점수</h4>
+      <table class="rules-table">
+        <tr><th>광(光)</th><td>3장(비광 포함) 2점 · 3장(비광 미포함) 3점 · 4장 4점 · 5장 15점</td></tr>
+        <tr><th>띠(단)</th><td>홍단(1·2·3월) 3점 · 초단(4·5·7월) 3점 · 청단(6·9·10월) 3점 · 5장 이상 1점(+1장당 1점)</td></tr>
+        <tr><th>열끗</th><td>고도리(2·4·8월 새) 5점 · 5장 이상 1점(+1장당 1점)</td></tr>
+        <tr><th>피</th><td>10장부터 1점(+1장당 1점) · 쌍피는 2장으로 계산</td></tr>
+      </table>
+
+      <h4>턴 중 특수 상황</h4>
+      <p><b>쪽</b>: 짝 없이 낸 패가 곧바로 뒤집은 패와 맞음 → 2장 획득 + 상대 전원에게 피 1장씩.<br/>
+      <b>뻑</b>: 손패+뒤집은 패까지 같은 월 3장이 겹침 → 가져가지 못하고 바닥에 남음(나중에 4번째가 나오면 그 사람이 4장 전부 획득). 뻑을 먹으면 상대 전원에게 피 1장씩.<br/>
+      <b>따닥</b>: 바닥 2장+손패+뒤집은 패로 같은 월 4장이 한 번에 모임 → 4장 획득(피는 받지 않음).<br/>
+      <b>싹쓸이</b>: 내 턴에 바닥이 완전히 비워짐 → 상대 전원에게 피 1장씩.</p>
+
+      <h4>흔들기 / 폭탄</h4>
+      <p>같은 월 3장을 손에 들고 있으면 턴 시작 시 "흔들기"를 선언할 수 있고(승리 시 점수 2배), 그 월의 마지막 1장이 바닥에 있으면 3장을 한 번에 내는 "폭탄"으로 4장을 가져올 수 있습니다(상대 전원에게 피 1장씩, 이후 1~2턴은 패 없이 덱만 뒤집음).</p>
+
+      <h4>고(Go) 배율</h4>
+      <p>1고는 배율 없이 +1점만 더합니다. 2고부터는 부를 때마다 배율이 2배씩 누적됩니다(2고 x2, 3고 x4, 4고 x8...).</p>
+
+      <h4>박(벌칙, 2배씩 중첩)</h4>
+      <p><b>광박</b>: 승자가 광으로 점수를 냈는데 광이 한 장도 없음.<br/>
+      <b>피박</b>: 승자가 피로 점수를 냈는데 모은 피가 5장(맞고는 7장) 이하.<br/>
+      <b>고박</b>: 먼저 고를 선언했다가 역전당해 짐(2인 맞고에는 없음).<br/>
+      <b>독박</b>: 아무도 고를 선언하지 않은 판에서, 상대가 완성한 족보의 마지막 패를 혼자 내줌.</p>
+    </div>
+    <button id="rules-close" type="button">닫기</button>
   </div>
 </div>
 

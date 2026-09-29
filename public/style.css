@@ -31,6 +31,15 @@ body {
 
 .screen { padding: 16px; min-height: 100vh; }
 
+/* 덱에서 카드가 뒤집혀 나오는 3D 플립(client.js flyCard의 'deck' 스타일)에 필요한 원근감을
+   게임 화면 전체에 한 번만 선언해둔다. 예전엔 .board/.hand-row 각각에 따로 선언하고,
+   client.js도 매 카드 transform마다 또 perspective(900px)를 끼워 넣고 있었다 - 뒤집힌
+   카드가 바로 캡처되어 먹은패 더미(.cap-cards, 이 두 컨테이너 밖에 있음)로 들어가는
+   경우까지 커버하려면 그 중복이 필요했던 것인데, 조상 하나에만 선언해두면 카드가 최종
+   적으로 어디에 앉든(바닥/손패/먹은패 전부) 항상 적용되면서 3D 렌더링 컨텍스트를
+   여러 개 겹쳐 만들 필요가 없어진다(그만큼 가벼워짐).*/
+#screen-game { perspective: 900px; }
+
 button {
   font-family: inherit;
 }
@@ -60,7 +69,6 @@ button, .lobby-box button, #host-controls button {
   box-shadow: 0 2px 6px rgba(0,0,0,0.25);
   transition: transform 0.08s ease, box-shadow 0.15s ease, filter 0.15s ease;
 }
-button:hover { filter: brightness(1.06); }
 button:active { transform: translateY(1px) scale(0.98); box-shadow: 0 1px 3px rgba(0,0,0,0.3); }
 
 .error { color: var(--bad); min-height: 20px; }
@@ -97,7 +105,16 @@ button:active { transform: translateY(1px) scale(0.98); box-shadow: 0 1px 3px rg
   background: rgba(0,0,0,0.12); border-radius: 16px;
   border: 1px solid rgba(224,184,74,0.15);
 }
-.board-info { display: flex; justify-content: center; align-items: center; gap: 18px; margin-bottom: 8px; font-size: 1em; opacity: 0.95; }
+.board-info {
+  display: flex; flex-wrap: wrap; justify-content: center; align-items: center;
+  gap: 18px; margin-bottom: 8px; font-size: 1em; opacity: 0.95;
+}
+/* 좁은 화면에서 문구 중간이 아니라 통째로 다음 줄로 넘어가게(단어가 잘리면 읽기 어려움) */
+#deck-count, #turn-indicator { white-space: nowrap; }
+.mute-btn {
+  padding: 4px 10px; margin-top: 0; font-size: 1.1em; line-height: 1;
+  background: rgba(255,255,255,0.08); box-shadow: none;
+}
 .floor {
   display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 10px;
   min-height: 190px; padding: 16px;
@@ -105,6 +122,8 @@ button:active { transform: translateY(1px) scale(0.98); box-shadow: 0 1px 3px rg
   border-radius: 12px; margin: 0 4px;
   box-shadow: inset 0 0 18px rgba(0,0,0,0.35);
 }
+/* 같은 월 카드끼리 살짝 겹쳐서 한 무더기처럼 보이게(-46px 마진은 JS에서 개별 카드에 적용) */
+.floor-group { display: flex; align-items: center; }
 
 .card {
   width: 78px; height: 128px; border-radius: 8px; background: var(--card-bg); color: #222;
@@ -113,9 +132,35 @@ button:active { transform: translateY(1px) scale(0.98); box-shadow: 0 1px 3px rg
   border: 2px solid #6b4a30;
   box-shadow: 0 3px 7px rgba(0,0,0,0.4);
   transition: transform 0.12s ease, box-shadow 0.12s ease;
+  transform-style: preserve-3d; /* 덱 뒤집기 애니메이션의 rotateY 자식 요소들이 납작해지지 않도록 */
 }
-.card:hover { transform: translateY(-5px); box-shadow: 0 7px 14px rgba(0,0,0,0.45); }
+/* 키보드로 Tab 이동해서 카드를 고를 때(role="button"인 카드만) 어디에 포커스가 있는지 보이게
+   한다 - 다른 곳(입력칸/opponent-card 등)과 같은 금색 톤으로 통일. */
+.card[role="button"]:focus-visible {
+  outline: 2px solid var(--gold); outline-offset: 2px;
+  box-shadow: 0 0 0 4px rgba(224,184,74,0.3);
+}
 .card .art-img { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
+
+/* 덱에서 카드가 뒤집혀 나오는 순간, 진짜 "뒷면 -> 앞면" 회전처럼 보이게 하기 위한 뒷면 레이어.
+   실제 콘텐츠(그림/뱃지/보너스 문양)와 이 뒷면 레이어 모두 backface-visibility:hidden이라,
+   .card 자신이 JS에서 rotateY(180deg)->0deg로 회전하는 동안 180deg 근처에서는 이 뒷면이,
+   0deg 근처에서는 실제 콘텐츠가 보인다(평소 정지 상태에선 이 뒷면 레이어는 180deg로 고정돼
+   있어 항상 숨어 있으므로 화면상 아무 변화가 없다). */
+.card::before {
+  content: '';
+  position: absolute; inset: 0; border-radius: inherit;
+  background-color: #184a32;
+  background-image: url('assets/cards/back.webp');
+  background-repeat: repeat; background-size: 30px 20px;
+  backface-visibility: hidden;
+  transform: rotateY(180deg);
+  z-index: 2;
+  pointer-events: none;
+}
+.card.mini::before { background-size: 18px 12px; }
+.card.back::before { display: none; } /* 카드 뒷면 자체는 별도 뒷면 레이어가 필요없음 */
+.card .art-img, .card .badge, .card .bonus-face { backface-visibility: hidden; }
 .card.gwang {
   border-color: var(--gold);
   box-shadow: 0 3px 7px rgba(0,0,0,0.4), 0 0 11px rgba(232,193,90,0.6);
@@ -127,11 +172,12 @@ button:active { transform: translateY(1px) scale(0.98); box-shadow: 0 1px 3px rg
 .card.pi { border-color: #999; }
 .card.pi.double::after {
   content: '쌍'; position: absolute; bottom: 2px; right: 3px; font-size: 12px; color: #fff; font-weight: bold;
-  background: rgba(180,30,30,0.85); border-radius: 4px; padding: 0 4px; z-index: 1;
+  background: #000; border-radius: 4px; padding: 0 4px; z-index: 1;
 }
 .card.stuck { box-shadow: 0 0 0 3px #d9534f inset, 0 3px 7px rgba(0,0,0,0.4); }
 .card.selected { transform: translateY(-14px); box-shadow: 0 8px 16px rgba(0,0,0,0.5); }
-.card.back:hover { transform: none; }
+/* 폭탄 이후 스킵 턴: 손패가 남아있어도 서버가 무시하므로, 헷갈리지 않게 눌러도 소용없다는 걸 보여준다 */
+.card.unplayable { opacity: 0.45; filter: grayscale(0.6); cursor: default; }
 .card.back {
   cursor: default; border-color: #a9791f;
   background-color: #184a32;
@@ -140,9 +186,64 @@ button:active { transform: translateY(1px) scale(0.98); box-shadow: 0 1px 3px rg
   background-size: 30px 20px;
 }
 
+/* 보너스패: 실제 이미지 에셋이 없어서 자체 디자인(금박 문장 + 벡터 별)으로 그린 카드 */
+.card.bonus {
+  border-color: var(--gold);
+  background:
+    radial-gradient(circle at 50% 28%, rgba(224,184,74,0.16), transparent 55%),
+    radial-gradient(circle at 50% 32%, #4c3878 0%, #2a1c48 45%, #170f28 100%);
+  box-shadow:
+    0 3px 7px rgba(0,0,0,0.4),
+    0 0 14px rgba(224,184,74,0.5),
+    inset 0 0 0 2px rgba(224,184,74,0.4),
+    inset 0 0 16px rgba(224,184,74,0.12);
+}
+.bonus-face {
+  width: 100%; height: 100%; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 6px; color: #f6e8c4;
+  position: relative;
+}
+.bonus-face::before, .bonus-face::after {
+  content: ''; position: absolute; left: 12%; right: 12%; height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(224,184,74,0.75), transparent);
+}
+.bonus-face::before { top: 15px; }
+.bonus-face::after { bottom: 15px; }
+.bonus-medallion {
+  width: 36px; height: 36px; display: flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(224,184,74,0.32) 0%, transparent 72%);
+}
+.bonus-emblem {
+  width: 30px; height: 30px;
+  fill: var(--gold);
+  filter: drop-shadow(0 0 4px rgba(224,184,74,0.9));
+}
+.bonus-emblem-core { fill: #170f28; }
+.bonus-text { font-size: 12px; font-weight: bold; letter-spacing: 2px; }
+.bonus-sub {
+  font-size: 10px; color: #fff; background: #000;
+  border-radius: 4px; padding: 0 6px; letter-spacing: 1px;
+}
+.card.mini .bonus-face { gap: 3px; }
+.card.mini .bonus-face::before { top: 7px; }
+.card.mini .bonus-face::after { bottom: 7px; }
+.card.mini .bonus-medallion { width: 19px; height: 19px; }
+.card.mini .bonus-emblem { width: 15px; height: 15px; }
+.card.mini .bonus-text { font-size: 7px; letter-spacing: 1px; }
+.card.mini .bonus-sub { font-size: 6px; }
+
+/* 9월 국화(열끗) 등 열끗<->쌍피 전환 가능한 카드의 전환 버튼 */
+.flex-toggle {
+  position: absolute; bottom: 2px; left: 2px; right: 2px;
+  font-size: 9px; padding: 1px 2px; border-radius: 4px; line-height: 1.3;
+  background: rgba(20,20,20,0.75); color: #f4e4b8; border: 1px solid rgba(224,184,74,0.5);
+  box-shadow: none; z-index: 2;
+}
+.card.mini .flex-toggle { font-size: 7px; padding: 0 1px; }
+
 /* 미니 카드 (상대방 패널/먹은패 정리용 축소 버전) */
 .card.mini { width: 42px; height: 69px; border-width: 1px; border-radius: 4px; }
-.card.mini:hover { transform: none; box-shadow: 0 2px 5px rgba(0,0,0,0.35); }
 .card.mini.pi.double::after { font-size: 8px; bottom: 1px; right: 1px; padding: 0 2px; }
 .card.mini.back { background-size: 18px 12px; }
 
@@ -215,7 +316,7 @@ button:active { transform: translateY(1px) scale(0.98); box-shadow: 0 1px 3px rg
 /* 카드 아트 (실제 화투 그림, assets/cards/*.webp) */
 .card .badge {
   position: absolute; font-size: 12px; font-weight: bold;
-  background: rgba(0,0,0,0.6); color: #fff; border-radius: 4px; padding: 1px 4px; z-index: 1;
+  background: #000; color: #fff; border-radius: 4px; padding: 1px 4px; z-index: 1;
 }
 .card .badge-type { top: 3px; left: 3px; }
 .card .badge-month { top: 3px; right: 3px; }
@@ -231,6 +332,101 @@ button:active { transform: translateY(1px) scale(0.98); box-shadow: 0 1px 3px rg
 }
 .card.pop { animation: cardPop 0.35s ease-out; }
 
+/* 덱/손에서 날아온 카드가 도착한 순간의 "찰진" 타격 임팩트. 찌그러지는 지점(10%)을 최대한
+   앞당기고 그 자리에서 짧게 붙잡아둔(18%까지 hold) 뒤에야 반동을 주는 게 핵심 - 충격이 눈에
+   "각인"되려면 찌그러지는 순간 자체가 거의 즉시여야 하고, 뒤이은 되튐은 천천히 풀려도 된다.
+   찌그러짐 폭도 가로 1.34배/세로 0.66배까지 더 키웠다. 이동 애니메이션이 끝난 뒤(그것도
+   flyCard의 히트스톱으로 한 번 더 멈췄다 풀린 뒤) 별도로 재생되므로 flyCard의 transform과
+   겹치지 않는다. */
+@keyframes cardSlam {
+  0% { transform: scale(1, 1); }
+  10% { transform: scale(1.46, 0.56); }
+  18% { transform: scale(1.46, 0.56); }
+  44% { transform: scale(0.86, 1.16); }
+  68% { transform: scale(1.06, 0.95); }
+  86% { transform: scale(0.98, 1.02); }
+  100% { transform: scale(1, 1); }
+}
+.card.slam { animation: cardSlam 0.32s cubic-bezier(.22,1,.36,1); }
+
+/* 착지 순간 카드 위에 흰색 오버레이(::after)가 아주 짧게 확 떴다 사라지는 히트 플래시.
+   처음엔 카드 자체에 filter:brightness()를 애니메이션했었는데, filter 애니메이션은
+   브라우저가 GPU 합성(compositing) 경로를 못 쓰고 매 프레임 다시 그려야 해서(특히 이
+   카드처럼 3D perspective/rotateY와 scale 왜곡까지 동시에 걸려 있는 경우) 실제로 눈에
+   띄는 버벅임의 원인이었다. opacity만 움직이는 오버레이는 transform과 마찬가지로 GPU
+   합성만으로 처리되므로 훨씬 가볍다. client.js의 hitFlash가 매 착지마다(이번 턴의 실제
+   행위자 카드에만) 이 클래스를 붙인다. */
+.card.hit-flash::after {
+  content: '';
+  position: absolute; inset: 0; border-radius: inherit;
+  background: #fff;
+  opacity: 0;
+  z-index: 6;
+  pointer-events: none;
+  animation: hitFlashOverlay 0.2s ease-out;
+}
+@keyframes hitFlashOverlay {
+  0% { opacity: 0; }
+  15% { opacity: 0.85; }
+  100% { opacity: 0; }
+}
+
+/* 카드가 착지하는 지점에서 한 번 퍼져나가는 충격 링. 카드 하나만 찌그러지는 것보다
+   "바닥을 때렸다"는 느낌을 훨씬 분명하게 준다. client.js의 spawnImpactRing이 착지
+   좌표에 이 엘리먼트를 만들어 붙였다가, 애니메이션이 끝나면(animationend) 스스로 지운다.
+   border-width는 애니메이션하지 않는다 - border-width 변화는 레이아웃을 다시 계산해야
+   하는 속성이라(transform/opacity와 달리 GPU 합성만으로 처리가 안 됨) 매 프레임 리플로우를
+   강제해서 버벅임의 또 다른 원인이었다. 링이 굵어 보이는 정도는 border를 고정폭으로 두고
+   transform: scale()에 맡긴다(스케일이 커질수록 시각적으로 함께 확대되어 보임). */
+.impact-ring {
+  position: fixed; width: 28px; height: 28px; margin: -14px 0 0 -14px;
+  border: 3px solid rgba(255, 226, 140, 0.95); border-radius: 50%;
+  pointer-events: none; z-index: 45; opacity: 0.95;
+  animation: impactRingBurst 0.34s ease-out forwards;
+}
+@keyframes impactRingBurst {
+  0% { transform: scale(0.4); opacity: 0.95; }
+  100% { transform: scale(3.6); opacity: 0; }
+}
+
+/* 덱(더미)에서 카드를 한 장 젖혀 뒤집는 순간, 더미 그림 자체도 살짝 들썩이게 */
+@keyframes deckFlipBump {
+  0% { transform: scale(1) rotate(0deg); }
+  35% { transform: scale(1.14) rotate(-7deg); }
+  70% { transform: scale(0.97) rotate(3deg); }
+  100% { transform: scale(1) rotate(0deg); }
+}
+.deck-stack.flipping { animation: deckFlipBump 0.36s ease-out; }
+
+/* 카드 두 장이 짝을 맞춰 먹은패로 들어가는 순간의 반짝임 */
+@keyframes captureFlash {
+  0% { box-shadow: 0 0 0 0 rgba(224,184,74,0.95), 0 3px 7px rgba(0,0,0,0.4); }
+  55% { box-shadow: 0 0 16px 6px rgba(224,184,74,0.6), 0 3px 7px rgba(0,0,0,0.4); }
+  100% { box-shadow: 0 3px 7px rgba(0,0,0,0.4); }
+}
+.card.capture-flash { animation: captureFlash 0.55s ease-out; }
+
+/* 뻑이 "형성"되는 순간(카드를 먹지 못하고 같은 월 3장이 바닥에 그대로 묶이는 순간)의
+   반짝임 - 실제로 카드를 먹는 캡처(위 captureFlash, 금색)와는 다른 사건이므로 색을
+   다르게(호박색) 줘서 "이건 캡처가 아니라 뻑으로 묶인 것"임을 바로 구분되게 한다.
+   client.js의 maybeFlashFormed가 이 무더기의 카드 3장 전부에 이 클래스를 붙인다. */
+@keyframes formedFlash {
+  0% { box-shadow: 0 0 0 0 rgba(224,120,40,0.95), 0 3px 7px rgba(0,0,0,0.4); }
+  55% { box-shadow: 0 0 18px 7px rgba(224,120,40,0.65), 0 3px 7px rgba(0,0,0,0.4); }
+  100% { box-shadow: 0 3px 7px rgba(0,0,0,0.4); }
+}
+.card.formed-flash { animation: formedFlash 0.6s ease-out; }
+
+/* 캡처된 카드가 도착하는 순간, 카드 한 장의 반짝임(capture-flash)만으로는 "먹었다"는
+   무게감이 부족해서, 그 카드를 받아들이는 종류별 묶음(cap-group, 광/열끗/띠/피 줄) 그릇
+   자체도 살짝 튀어오르게 한다. client.js의 groupPunch가 이 클래스를 붙인다. */
+@keyframes groupPunch {
+  0% { transform: scale(1); }
+  35% { transform: scale(1.06); }
+  100% { transform: scale(1); }
+}
+.cap-group.group-punch { animation: groupPunch 0.22s ease-out; }
+
 @keyframes boardShake {
   0%, 100% { transform: translateX(0); }
   20% { transform: translateX(-6px); }
@@ -239,6 +435,15 @@ button:active { transform: translateY(1px) scale(0.98); box-shadow: 0 1px 3px rg
   80% { transform: translateX(4px); }
 }
 .board.shake { animation: boardShake 0.4s; }
+
+/* 폭탄/싹쓸이의 큰 흔들림보다 훨씬 작은, 일반 캡처(쪽/따닥/뻑 등)용 "톡" 흔들림.
+   client.js의 nudgeBoard가 트리거한다. */
+@keyframes boardNudge {
+  0%, 100% { transform: translate(0, 0); }
+  30% { transform: translate(-2px, 1px); }
+  60% { transform: translate(2px, -1px); }
+}
+.board.nudge { animation: boardNudge 0.18s ease-out; }
 
 /* 이벤트 배너 ("뻑!", "따닥!", "폭탄!" 등) */
 .event-banner {
@@ -287,8 +492,67 @@ button:active { transform: translateY(1px) scale(0.98); box-shadow: 0 1px 3px rg
 #result-body table { width: 100%; border-collapse: collapse; margin-top: 8px; }
 #result-body td, #result-body th { padding: 4px 8px; border-bottom: 1px solid rgba(255,255,255,0.15); font-size: 0.9em; }
 
+/* 규칙 가이드 모달: 내용이 길어서 세로 스크롤 + 왼쪽 정렬로 읽기 쉽게 */
+.rules-box { max-height: 85vh; display: flex; flex-direction: column; }
+.rules-body { overflow-y: auto; text-align: left; padding-right: 4px; }
+.rules-body h4 { margin: 14px 0 4px; color: var(--gold); }
+.rules-body h4:first-child { margin-top: 0; }
+.rules-body p { margin: 0 0 6px; line-height: 1.5; font-size: 0.92em; }
+.rules-table { width: 100%; border-collapse: collapse; margin: 4px 0; }
+.rules-table th, .rules-table td { text-align: left; padding: 4px 6px; font-size: 0.88em; border-bottom: 1px solid rgba(255,255,255,0.1); }
+.rules-table th { width: 60px; color: var(--gold); white-space: nowrap; }
+#modal-rules #rules-close { margin-top: 12px; }
+
 @media (max-width: 600px) {
   .card { width: 58px; height: 96px; font-size: 9px; }
   .card .badge { font-size: 9px; }
   .opponent-card { min-width: 150px; }
+}
+
+/* 전정기관(vestibular) 장애 등으로 motion을 줄이고 싶어하는 사용자를 위한 설정.
+   여기서 끄는 것들은 전부 JS가 setTimeout/prefersReducedMotion() 체크로 직접 관리하는
+   "장식용" keyframe 애니메이션뿐이다(카드 등장 pop/착지 slam, 캡처 반짝임/그릇 펀치, 뻑 형성
+   반짝임, 보드 흔들림, 이벤트 배너, 덱 더미 들썩임, 점수 팝업) - animationend 이벤트를
+   기다리는 로직이 없으므로 꺼도 게임 진행에는 전혀 영향이 없다. 반면 카드가 실제로
+   이동하는 FLIP 애니메이션(client.js의 flyCard, Web Animations API)과 .impact-ring은
+   여기서 건드리지 않는다: flyCard는 anim.onfinish 콜백(카드 위치/z-index 정리, 착지
+   이펙트, 캡처/뻑형성 반짝임 트리거)이 실제로 발생해야 하는 로직이라 CSS로 강제로 끌
+   방법이 없고, .impact-ring은 client.js가 spawnImpactRing에서 이미 prefersReducedMotion()을
+   직접 체크해 아예 만들지 않으므로 여기 넣으면 오히려 animationend가 못 불려 DOM에
+   그대로 남는 문제가 생긴다(그래서 .slam만 여기 두고 .impact-ring은 두지 않는다). flyCard의
+   히트스톱(착지 직전 오버슈트한 값을 keyframe 두 지점에 반복해 만든 "정지 구간")도 같은
+   이유로 여기서 끄지 않는다 - 추가 움직임이 아니라 "움직임을 잠깐 없애는" 것이라 오히려
+   이 사용자층에도 무해하다. */
+@media (prefers-reduced-motion: reduce) {
+  .card.pop,
+  .card.slam,
+  .card.hit-flash::after,
+  .card.capture-flash,
+  .card.formed-flash,
+  .cap-group.group-punch,
+  .board.shake,
+  .board.nudge,
+  .event-banner.show,
+  .deck-stack.flipping,
+  .score-popup {
+    animation: none !important;
+  }
+}
+
+/* :hover 규칙들은 실제로 마우스 포인터가 있는 기기(hover:hover)에서만 적용한다.
+   터치스크린은 마우스 enter/leave 개념이 없어서, 브라우저가 탭을 "마우스가 그 위로
+   들어왔다"로 취급해 :hover 스타일을 그대로 적용해버리고, 그 다음 다른 곳을 탭하기
+   전까지(때로는 다음 렌더로 그 카드가 통째로 다시 그려지기 전까지) 그 스타일이 그대로
+   "눌어붙어" 있는다. 특히 .card:hover는 카드를 5px 위로 들어올리는 효과라, 손패처럼
+   카드가 다닥다닥 붙어 있는 곳에서 탭한 카드 하나가 계속 들려있는 것처럼 보여
+   모바일에서 화면이 어색해 보이는 문제가 있었다. 이 규칙들을 없애는 게 아니라
+   "마우스가 있을 때만" 적용되도록 범위를 좁혀서, 데스크톱에서의 hover 피드백은
+   그대로 유지하면서 터치 기기에서만 이 눌어붙는 현상을 없앤다. */
+@media (hover: hover) and (pointer: fine) {
+  button:hover { filter: brightness(1.06); }
+  .mute-btn:hover { filter: none; background: rgba(255,255,255,0.16); }
+  .card:hover { transform: translateY(-5px); box-shadow: 0 7px 14px rgba(0,0,0,0.45); }
+  .card.unplayable:hover { transform: none; box-shadow: none; }
+  .card.back:hover { transform: none; }
+  .card.mini:hover { transform: none; box-shadow: 0 2px 5px rgba(0,0,0,0.35); }
 }

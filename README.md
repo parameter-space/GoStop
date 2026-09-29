@@ -55,6 +55,10 @@ npx cloudflared tunnel --url http://localhost:3000
 - 나가리는 배율 없이 그냥 재시작
 - 점당 금액은 게임 중 언제든 변경 가능하고(대기방/게임 화면 둘 다에서 조정 가능), 정산 금액은 방에 계속 누적됨
 - 호스트는 "이 판 무효 처리"(현재 판만 취소하고 다음 판으로)와 "방 폭파"(방 전체를 끝내고 모두 로비로) 두 버튼을 따로 가짐
+- 바닥에 같은 월 카드가 2장 있는 상태에서 그 월 카드를 내면(또는 덱에서 뒤집은 카드가 바닥의 같은 월 2장과 매치되면) 어느 카드와 짝지을지 직접 선택하는 모달이 뜬다
+- 바닥에 같은 월 카드가 여러 장 쌓이면(뻑 더미 등) 살짝 겹쳐서 한 무더기처럼 보이게 표시된다
+- 9월 국화(열끗) 카드는 자기 먹은패에 있는 동안 언제든(자기 차례가 아니어도) 열끗↔쌍피로 전환할 수 있다
+- 보너스패 2장이 덱에 포함되어 있고(초기 바닥에는 절대 깔리지 않음) 항상 쌍피로 계산된다: 손패에서 내면 상대 전원에게서 피 1장씩 뺏어오고 덱에서 한 장을 손패로 가져온 뒤, 그 한 번의 턴 안에서 정식으로(뻑/따닥/쪽 판정 포함) 카드를 한 장 더 낼 수 있다. 반대로 덱을 뒤집다가 보너스패가 나오면 즉시 자기 먹은패로 가져가고 상대 피는 뺏지 않은 채 덱에서 한 장을 더 뒤집어 이어간다
 
 ## 연출(타격감)
 
@@ -70,7 +74,8 @@ npx cloudflared tunnel --url http://localhost:3000
 
 - **카드 그림 48장 + 카드 뒷면**: Louie Mantia가 그려 위키백과 ["Sakura (card game)"](https://en.wikipedia.org/wiki/Sakura_(card_game)) 문서에 올린 일러스트. [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/) 라이선스라 출처 표기만 하면 자유롭게 쓸 수 있다. 특정 제작사가 파는 화투 상품 이미지를 그대로 스캔한 게 아니라, 위키백과용으로 새로 그려진 원본 일러스트라 저작권 문제 없이 쓸 수 있다. 파일 위치: `public/assets/cards/`.
 - **효과음**: [`uisfx`](https://uisfx.com) 오픈소스 사운드 팩([CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/), 출처 표기도 필요 없음)에서 스냅/락/더블클릭/스트릭/레벨업/성취 등을 골라 씀. 파일 위치: `public/assets/audio/`.
-- 둘 다 이 저장소에 파일로 포함되어 있어서 실행할 때 인터넷에서 따로 받을 필요는 없다.
+- **카드 착지 타격음**: [Freesound.org](https://freesound.org/people/Zaxtor99/sounds/147532/)에 Zaxtor99가 올린 `card.wav`("카드 한 장이 테이블에 놓이는 소리를 직접 녹음함", [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/)). 파일: `public/assets/audio/card-slap-real.mp3`.
+- 전부 이 저장소에 파일로 포함되어 있어서 실행할 때 인터넷에서 따로 받을 필요는 없다.
 
 ## 알려진 단순화 사항 (완벽한 공식 규칙과 다른 부분)
 
@@ -83,7 +88,7 @@ npx cloudflared tunnel --url http://localhost:3000
 
 ```
 server/
-  deck.js     화투 48장 정의
+  deck.js     화투 48장 + 보너스패 2장 정의
   engine.js   순수 게임 로직(매칭, 점수, 배율)
   room.js     방/라운드 상태 관리
   index.js    Express + Socket.io 서버

@@ -75,12 +75,27 @@ function emit(socket, event, payload = {}) {
     if (!myHand.length) continue;
     const card = myHand[Math.floor(Math.random() * myHand.length)];
 
+    if (card.type === 'bonus') {
+      const bonusRes = await emit(sockets[actorIdx], 'game:playBonus', { cardId: card.id });
+      if (!bonusRes.ok) throw new Error('보너스패 실패: ' + bonusRes.error);
+      // 보너스패를 내면 같은 사람 차례가 유지되며 정식으로 한 장 더 낸다.
+      continue;
+    }
+
     const res = await emit(sockets[actorIdx], 'game:playCard', { cardId: card.id });
     if (res.ok) continue;
     if (res.needChoice) {
       const chosen = res.matches[0];
       const res2 = await emit(sockets[actorIdx], 'game:playCard', { cardId: card.id, chosenFloorId: chosen.id });
-      if (!res2.ok) throw new Error('선택 후 실패: ' + res2.error);
+      if (!res2.ok && !res2.needChoice2) throw new Error('선택 후 실패: ' + res2.error);
+      if (res2.needChoice2) {
+        const res3 = await emit(sockets[actorIdx], 'game:resolveChoice2', { chosenId: res2.matches[0].id });
+        if (!res3.ok) throw new Error('선택2 후 실패: ' + res3.error);
+      }
+    } else if (res.needChoice2) {
+      const chosen2 = res.matches[0];
+      const res2 = await emit(sockets[actorIdx], 'game:resolveChoice2', { chosenId: chosen2.id });
+      if (!res2.ok) throw new Error('선택2 후 실패: ' + res2.error);
     } else {
       throw new Error('플레이 실패: ' + res.error);
     }
