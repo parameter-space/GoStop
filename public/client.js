@@ -458,10 +458,25 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
 
   // 캡처된 카드가 도착하는 순간, 카드 한 장의 반짝임만으로는 "먹었다"는 무게감이 부족해서
   // 그 카드를 받아들이는 종류별 묶음(cap-group) 그릇 자체도 살짝 튀어오르게 한다.
+  //
+  // 따닥/뻑 해소/폭탄처럼 한 턴에 4장이 한꺼번에 캡처되면, 그 4장은 보통 광/열끗/띠/피
+  // 서로 다른 종류에 나뉘어 들어가서 각자 다른 cap-group이 따로따로 튀어오른다 - 타이밍은
+  // 정확히 같아도(실측으로 확인 완료) 화면 여러 곳에서 작은 통통 튐이 각자 따로 일어나니
+  // "이 4장이 한 덩어리로 정리됐다"는 느낌 대신 "그냥 여러 개가 우연히 동시에 일어났다"는
+  // 느낌이 났다. 이번 렌더에서 같은 먹은패 묶음(cap-groups) 안에 서로 다른 cap-group이
+  // 2개 이상 튀어오르면, 그 묶음 전체에도 한 번 더 크고 뚜렷한(multi-punch) 튐+금빛 광을
+  // 얹어서 "여러 장이지만 하나의 사건으로 함께 정리됐다"는 걸 분명히 보여준다.
+  const punchedGroupsByWrap = new Map();
   function groupPunch(elm) {
     const group = elm.closest('.cap-group');
     if (!group) return;
     restartAnimClass(group, 'group-punch');
+    const wrap = group.closest('.cap-groups');
+    if (!wrap) return;
+    let groups = punchedGroupsByWrap.get(wrap);
+    if (!groups) { groups = new Set(); punchedGroupsByWrap.set(wrap, groups); }
+    groups.add(group);
+    if (groups.size >= 2) restartAnimClass(wrap, 'multi-punch');
   }
 
   // 뻑이 "형성"되는 순간(카드를 먹지 못하고 바닥에 3장이 묶이는 순간)은 캡처가 아니라서

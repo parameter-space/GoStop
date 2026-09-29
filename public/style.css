@@ -437,6 +437,18 @@ button:active { transform: translateY(1px) scale(0.98); box-shadow: 0 1px 3px rg
 }
 .cap-group.group-punch { animation: groupPunch 0.22s ease-out; }
 
+/* 한 턴에 여러 종류(광/열끗/띠/피)에 걸쳐 카드가 한꺼번에 캡처될 때(따닥/뻑 해소/폭탄),
+   각 cap-group의 작은 튐만으로는 "여러 장이지만 한 사건"이라는 게 잘 안 느껴진다.
+   그 묶음 전체(cap-groups)에 조금 더 크고 뚜렷한 튐 + 금빛 광을 한 번 더 얹어서
+   "여러 장이 하나로 정리됐다"는 걸 분명히 보여준다. client.js의 groupPunch가 같은
+   cap-groups 안에서 서로 다른 cap-group이 2개 이상 튀어오를 때 이 클래스를 붙인다. */
+@keyframes capGroupsMultiPunch {
+  0% { transform: scale(1); box-shadow: none; }
+  40% { transform: scale(1.025); box-shadow: 0 0 26px 4px rgba(232,193,90,0.55); }
+  100% { transform: scale(1); box-shadow: none; }
+}
+.cap-groups.multi-punch { animation: capGroupsMultiPunch 0.32s ease-out; }
+
 @keyframes boardShake {
   0%, 100% { transform: translateX(0); }
   20% { transform: translateX(-6px); }
@@ -540,6 +552,7 @@ button:active { transform: translateY(1px) scale(0.98); box-shadow: 0 1px 3px rg
   .card.capture-flash,
   .card.formed-flash,
   .cap-group.group-punch,
+  .cap-groups.multi-punch,
   .board.shake,
   .board.nudge,
   .event-banner.show,
