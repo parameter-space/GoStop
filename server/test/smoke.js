@@ -43,6 +43,18 @@ function emit(socket, event, payload = {}) {
   let turns = 0;
   const maxTurns = 500;
 
+  // playerId(서버가 부여한 nanoid) -> sockets[] 인덱스. sockets[]는 "누가 먼저 접속했는지"
+  // (P0=방장, P1, P2 순)로 고정된 순서인데, round.turnOrder는 매 판마다 무작위로 정해지는
+  // 선(先)을 기준으로 회전한다(gostop_rules.md/room.js startRound 참고) - 그래서
+  // round.turnOrder.indexOf(actorId)가 주는 값은 "이번 판에서 몇 번째로 두는 사람인지"일
+  // 뿐, sockets[] 안에서 몇 번째로 접속한 사람인지와는 다른 값이다(선이 P0가 아닌 판이면
+  // 둘이 어긋나서 완전히 다른 사람의 소켓으로 명령을 보내버려 "당신의 차례가 아닙니다"가
+  // 뜬다 - 실제 게임 로직의 버그가 아니라 이 테스트 스크립트 자체의 버그였다). state.players
+  // (참가 순서 그대로, 절대 안 바뀜)로 매번 다시 만들어서 항상 정확한 소켓을 찾는다.
+  function socketIndexForPlayerId(state, playerId) {
+    return state.players.findIndex((p) => p.id === playerId);
+  }
+
   while (rounds < 2 && turns < maxTurns) {
     await new Promise((r) => setTimeout(r, 30));
     turns++;
@@ -60,7 +72,7 @@ function emit(socket, event, payload = {}) {
     }
 
     if (round.pendingGoStop) {
-      const actorIdx = round.turnOrder.indexOf(round.pendingGoStop.playerId);
+      const actorIdx = socketIndexForPlayerId(state, round.pendingGoStop.playerId);
       const decision = round.pendingGoStop.score.total >= 10 || Math.random() < 0.5 ? 'stop' : 'go';
       const res = await emit(sockets[actorIdx], 'game:goStop', { decision });
       if (!res.ok) throw new Error('고스톱 실패: ' + res.error);
@@ -69,7 +81,7 @@ function emit(socket, event, payload = {}) {
     }
 
     const actorId = round.currentActor;
-    const actorIdx = round.turnOrder.indexOf(actorId);
+    const actorIdx = socketIndexForPlayerId(state, actorId);
     const actorState = states[sockets[actorIdx].id];
     const myHand = actorState.round.myHand;
     if (!myHand.length) continue;

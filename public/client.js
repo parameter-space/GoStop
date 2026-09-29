@@ -397,7 +397,12 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
   const deckStack = el('deck-stack');
   const deckRect = deckStack ? deckStack.getBoundingClientRect() : null;
   const evt = (state.round && state.round.lastEvent) || {};
-  const captureKinds = ['jjok', 'ttadak', 'ppeok_resolved', 'sweep', 'capture', 'bonus_deck', 'bonus_hand'];
+  // 'bomb'이 빠져 있었다 - 폭탄도 명백히 캡처(손패 3장+바닥 1장이 전부 내 먹은패로 들어감)인데
+  // 여기 없어서 willCapture()가 항상 false를 줬다. 그 결과: (1) 바닥의 4번째 카드가 제대로 된
+  // 비행 애니메이션(flyCard) 대신 그냥 자리만 슬쩍 옮기는 ambient reposition 취급을 받아
+  // 180ms 만에 너무 일찍 도착해버렸고(손패 3장은 520ms), (2) 폭탄으로 들어온 카드 4장
+  // 전부(손패 3장 포함) 도착해도 캡처 확인 반짝임(capture-flash)이 아예 안 떴다.
+  const captureKinds = ['jjok', 'ttadak', 'ppeok_resolved', 'sweep', 'capture', 'bonus_deck', 'bonus_hand', 'bomb'];
   let deckTapped = false;
   if (DEBUG_ANIM) {
     logAnim('[anim] evt', JSON.stringify(evt), 'oldRects.size', oldRects.size);
@@ -791,11 +796,17 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     }
     const handCardMonth = cardMonth(evt.handCardId);
     const flippedCardMonth = cardMonth(evt.flippedCardId);
+    // 폭탄(bomb)은 손패 카드가 evt.handCardId(단수)가 아니라 evt.handCardIds(배열)라서
+    // handCardMonth로는 못 잡는다 - 폭탄 3장은 항상 같은 월이므로 그 중 아무 거나(첫 장)로
+    // 월을 구한다.
+    const bombMonth = Array.isArray(evt.handCardIds) && evt.handCardIds.length > 0
+      ? cardMonth(evt.handCardIds[0]) : null;
     // 손패로 낸 카드/덱에서 뒤집은 카드가 각각 "바닥의 어느 지점에서 맞춰졌는지" -
     // 캡처되어 먹은패로 들어가는(=primaryMover가 아닌 willCapture) 카드들 중 월이 같은
     // 카드의 예전(이번 렌더 전) 바닥 위치를 그 "맞춰지는 지점"으로 쓴다.
     let handViaRect = null;
     let deckViaRect = null;
+    let bombViaRect = null;
     if (captureKinds.includes(evt.kind)) {
       document.querySelectorAll('.card[data-id]').forEach((partnerElm) => {
         const pid = partnerElm.dataset.id;
@@ -822,6 +833,7 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
         if (!oldPos) return;
         if (m === handCardMonth && !handViaRect) handViaRect = oldPos;
         if (m === flippedCardMonth && !deckViaRect) deckViaRect = oldPos;
+        if (m === bombMonth && !bombViaRect) bombViaRect = oldPos;
       });
     }
     // "쪽"(무매치로 낸 손패를, 곧이어 뒤집은 덱 카드가 맞추는 경우)은 짝이 "바닥에 이미
@@ -841,17 +853,25 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     // 경유지 찾기 로직이 한쪽만 잡아버림)이나 보너스패(월 정보가 아예 없어 경유지 로직
     // 자체가 적용 안 됨) 같은 경우에도 항상 정확하다 - 앞으로 새로운 캡처 종류가 추가돼도
     // 이 판정만은 깨지지 않는다.
+    // 폭탄(bomb)은 손패 카드가 evt.handCardId(단수)가 아니라 evt.handCardIds(배열)에
+    // 들어있다 - 그래서 이 단수 id만 보던 handCardElm 찾기는 폭탄일 때 항상 못 찾은
+    // 것으로 나와, 폭탄으로 캡처되는 바닥 4번째 카드까지 "손패가 캡처 안 했다"고 잘못
+    // 판단해버렸다(globalSweepStart가 폭탄의 실제 도착 시각을 반영 못 함). 폭탄은 항상
+    // 4장 전부를 캡처하므로 그냥 true로 둔다.
+    const isBomb = Array.isArray(evt.handCardIds) && evt.handCardIds.length > 0;
     const handCardElm = evt.handCardId && document.querySelector(`.card[data-id="${evt.handCardId}"]`);
     const deckCardId = evt.flippedCardId || evt.drawnCardId;
     const deckCardElm = deckCardId && document.querySelector(`.card[data-id="${deckCardId}"]`);
-    const handCaptures = Boolean(handCardElm && willCapture(handCardElm));
+    const handCaptures = isBomb || Boolean(handCardElm && willCapture(handCardElm));
     const deckCaptures = Boolean(deckCardElm && willCapture(deckCardElm));
     // "손패를 낸다(짝이 있으면 탁) -> 덱을 뒤집는다(짝이 있으면 또 탁) -> 그제서야 이번
     // 턴에 맞춰진 카드들이 전부 한꺼번에 내 먹은패로 쓸려 들어간다"는 순서를 지키기 위해,
     // 실제로 캡처가 걸린 페이즈들 중 가장 늦게 "탁" 하는 시점(+HOLD)을 전역 스윕 시작
     // 시각으로 삼는다 - 손패만 캡처했으면 손패가 부딪힌 직후에, 손패+덱이 둘 다
-    // 캡처했으면 덱까지 부딪힌 뒤에야 다같이 스윕을 시작한다.
-    const handHitTime = PHASE1_DUR;
+    // 캡처했으면 덱까지 부딪힌 뒤에야 다같이 스윕을 시작한다. handPhaseDur를 쓰는 이유는
+    // 폭탄이면 손패 페이즈 자체가 3장 시차(70ms씩)만큼 더 길어지기 때문이다(PHASE1_DUR만
+    // 쓰면 마지막 폭탄 카드가 아직 도착도 안 했는데 스윕이 시작되는 어긋남이 생긴다).
+    const handHitTime = handPhaseDur;
     const deckHitTime = deckPhaseStart + approachDurFor('deck');
     const globalSweepStart = HOLD + Math.max(
       handCaptures ? handHitTime : 0,
@@ -877,9 +897,16 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
       const id = elm.dataset.id;
       const now = elm.getBoundingClientRect();
       const old = oldRects.get(id);
-      let dx = 0, dy = 0, style = 'move', bombIndex = -1;
+      let dx = 0, dy = 0, style = 'move';
       const primary = isPrimaryMover(id);
       const capturing = primary || willCapture(elm);
+      // 폭탄(bomb) 카드는 손패에 있다가 나가는 것이라 old(이전 위치)가 항상 존재해서 아래
+      // if(old)/else 분기 중 반드시 if(old) 쪽을 타는데, 예전엔 bombIndex가 else 분기
+      // 안에서만(원래 위치를 못 찾은 새 카드 취급하는 경로에서만) 계산돼 실제 폭탄 플레이에서는
+      // 한 번도 계산되지 않고 항상 -1로 남아 있었다("탁탁탁" 시차 효과가 실전에서 전혀 발동하지
+      // 않던 원인). old/new 여부와 무관하게 handCardIds 배열 안 순서만 보면 되므로 여기서
+      // 미리 한 번만 계산한다.
+      const bombIndex = Array.isArray(evt.handCardIds) ? evt.handCardIds.indexOf(id) : -1;
 
       if (old) {
         dx = old.left - now.left;
@@ -936,7 +963,6 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
           // (아래 flyCard 호출의 delay) 세 장이 동시에 뭉개지듯 나타나지 않고, 실제로 손에서
           // 연달아 "탁탁탁" 내려치는 것처럼 보이게 한다.
           origin = oldHandRowRects.get(evt.playerId) || deckRect; style = 'hand';
-          bombIndex = evt.handCardIds.indexOf(id);
         }
         if (!origin) {
           if (DEBUG_ANIM) logAnim('[anim]', id, 'NO OLD RECT + NO ORIGIN -> instant, no animation');
@@ -969,9 +995,16 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
       // 잠깐 머물다가, 그제서야 이번 턴에 맞춰진 카드들과 다 함께 내 먹은패로 마저 쓸려
       // 들어간다(flyCardViaMeeting, 단일 애니메이션). 짝이 없는 그냥 내기(place)는
       // 원래대로 한 번에 곧장 최종 위치까지 간다(flyCard).
-      const viaRect = primary && !(bombIndex > 0)
-        ? (style === 'deck' ? deckViaRect : (id === evt.handCardId ? handViaRect : null))
-        : null;
+      // 폭탄 3장은 각자 자기 차례(bombIndex*70 시차)에 손에서 나와, 다른 주자와 마찬가지로
+      // 바닥의 그 짝(bombViaRect)이 있던 자리까지 먼저 가서 "탁" 부딪힌 뒤 대기하다가,
+      // globalSweepStart에 맞춰 바닥 짝과 다 같이 먹은패로 쓸려 들어간다 - 예전엔 이 경로가
+      // 아예 없어서(bombIndex는 늘 -1로 계산되던 버그 때문에 이 분기 자체가 죽어있었다) 폭탄
+      // 카드 3장이 바닥 짝을 기다리지도 않고 각자 도착 즉시(약 520~660ms) 먹은패로 곧장
+      // 가버렸고, 그 뒤 한참(최대 630ms 이상) 지나서야 바닥 짝 혼자 뒤늦게 날아 들어오는
+      // 것처럼 보였다("따로따로 움직이고 뒤늦게 날아온다"는 증상이 폭탄에서도 똑같이 났다).
+      const viaRect = bombIndex >= 0
+        ? bombViaRect
+        : (primary ? (style === 'deck' ? deckViaRect : (id === evt.handCardId ? handViaRect : null)) : null);
 
       let anim;
       if (viaRect) {
