@@ -1603,6 +1603,17 @@ function renderGame(state) {
   const round = state.round;
   const me = round.players.find((p) => p.id === myId);
   const myPlayerMeta = state.players.find((p) => p.id === myId);
+  // myId가 이번 판의 플레이어 목록과 어긋난 순간(예상 밖의 재접속 경합 등)에는 me가
+  // undefined가 되는데, 그대로 진행하면 바로 아래 me.score 등에서 예외가 터진다. 이
+  // 함수 전체가 던지는 예외라서 그 뒤에 이어지는 animateNewCards(카드 비행 애니메이션)
+  // 호출까지 통째로 실행이 안 되고 조용히 실패한다 - "카드를 낸 순간 카드가 엔티티
+  // 취급을 못 받고(애니메이션 없이) 이상해진다"던 증상이 바로 이 경로였다. 이 화면은
+  // "나"를 전제로 그려지므로 me 없이는 그릴 수 없어, 다음 정상 상태가 올 때까지
+  // 안전하게 건너뛴다.
+  if (!me) {
+    console.warn('[renderGame] myId가 현재 판 플레이어 목록에 없어 렌더를 건너뜀', { myId });
+    return false;
+  }
 
   if (lastSeenRoundNumber !== state.roundNumber) {
     lastSeenRoundNumber = state.roundNumber;
