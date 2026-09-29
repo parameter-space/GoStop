@@ -419,9 +419,22 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
   // handleGameEvent를 재생하도록, 아래에서 Promise.all(...).then(...)으로 넘긴다.
   const primaryAnims = [];
 
+  // 이번 턴에 "새로" 캡처되어 들어온 카드인지(=바닥에서 방금 빠져나왔거나, 이번 턴의
+  // 행위자 카드 자신)를 구분한다. 예전엔 이 구분이 없어서 그냥 ".cap-cards 안에 있는지"만
+  // 봤는데, 그러면 훨씬 전 턴에 이미 먹은패로 들어가 있던 카드까지("이번 턴과 전혀 무관하게
+  // 원래 거기 있던 카드") 이번 턴에 캡처된 것처럼 오판해버렸다. 그 결과 캡처가 있는 턴마다
+  // (매우 흔함) 두 사람의 먹은패 더미 전체가 - 반대편 플레이어의 손패 수가 바뀌어 그
+  // opponent-card 박스 너비가 살짝 변하기만 해도 몇 px씩 밀리는데 - 매번 무거운 비행
+  // 애니메이션(히트스톱+충격+캡처 반짝임)으로 재생되고 있었다("카드들이 계속 따로
+  // 움직이고 렉이 걸린다"던 증상의 핵심 원인).
+  function capturedThisTurn(id) {
+    return isPrimaryMover(id) || Boolean(oldFloorIds && oldFloorIds.has(id));
+  }
+
   function maybeFlashCapture(elm) {
     if (!captureKinds.includes(evt.kind)) return false;
     if (!elm.closest('.cap-cards')) return false;
+    if (!capturedThisTurn(elm.dataset.id)) return false;
     restartAnimClass(elm, 'capture-flash');
     return true;
   }
@@ -477,7 +490,8 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
   // 매치 결과로 딸려서 캡처되는 상대 카드를 가려내는 데 쓴다. 이런 카드는 ③페이즈(손패
   // +덱 페이즈가 모두 끝난 뒤)에 출발시켜야 "맞춰서 가져간다"는 순서가 제대로 보인다.
   function willCapture(elm) {
-    return captureKinds.includes(evt.kind) && !!elm.closest('.cap-cards');
+    return captureKinds.includes(evt.kind) && !!elm.closest('.cap-cards')
+      && capturedThisTurn(elm.dataset.id);
   }
 
   // 이 카드에 새 애니메이션을 걸기 직전에, 혹시 이 "같은 엘리먼트"에 걸려 있던 이전
