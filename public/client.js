@@ -622,7 +622,10 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
   // 올렸다(620/450 -> 700/520) - 대기 시간(HOLD/PHASE_GAP)과 이동 속도는 다른 축이라,
   // 대기 시간은 그대로 두고 이동 자체만 더 느긋하게 만든다. 오버슈트/정착 바운스
   // (buildApproachKeyframes, flyCard/flyCardViaMeeting)와 함께 봐야 "쫀득함"이 완성된다.
-  function approachDurFor(style) { return style === 'deck' ? 700 : 520; }
+  // 이후 "여전히 느리다"는 피드백으로 다시 조금 당겼다(700/520 -> 600/460). 느리게 보이던 큰
+  // 원인은 flyCardViaMeeting이 접근 모양을 대기 시간까지 늘려 붙이던 버그였고, 그걸 고친 뒤라
+  // 이 정도만 당겨도 쫀득함(오버슈트/히트스톱)은 그대로 남는다.
+  function approachDurFor(style) { return style === 'deck' ? 600 : 460; }
 
   // 마지막(가장 늦은) 페이즈의 카드가 부딪힌 뒤에도, 전역 스윕이 시작되기까지 아주 잠깐
   // 더 멈춰 있는 여유(격투 게임의 히트스톱과 비슷한 "타격의 무게감"을 위한 짧은 정지).
@@ -644,7 +647,9 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
           { offset: 0, transform: `translate(${dx}px, ${dy}px) scale(0.55) rotateY(180deg)` },
           { offset: s * 0.4, transform: `translate(${mix(dx, endDx, 0.12)}px, ${mix(dy, endDy, 0.12) - 16}px) scale(0.86) rotateY(0deg)` },
           { offset: s * 0.48, transform: `translate(${mix(dx, endDx, 0.12)}px, ${mix(dy, endDy, 0.12) - 16}px) scale(0.86) rotateY(0deg)` },
-          { offset: s * 0.8, transform: `translate(${mix(dx, endDx, 1.06)}px, ${mix(dy, endDy, 1.06)}px) scale(1.12) rotateY(0deg)` },
+          // 오버슈트는 작게: 덱 카드는 더미(가운데)에서 바로 옆 바닥으로 내려앉는 거라, 손패처럼
+          // 크게(1.12) 부풀면 perspective 아래에서 화면 앞으로 툭 튀어나온 것처럼 보였다.
+          { offset: s * 0.8, transform: `translate(${mix(dx, endDx, 1.03)}px, ${mix(dy, endDy, 1.03)}px) scale(1.04) rotateY(0deg)` },
           { offset: s, transform: `translate(${endDx}px, ${endDy}px) scale(1) rotateY(0deg)` },
         ],
       };
@@ -855,21 +860,31 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
 
     const approachDur = approachDurFor(style);
     const sweepDur = approachDurFor('move'); // 맞춰지는 지점 -> 내 먹은패, 'move' 스타일 재사용
-    const phase1Dur = approachDur + waitMs;
-    const sweepStart = delay + phase1Dur;
+    const sweepStart = delay + approachDur + waitMs;
 
-    // ①+②: 접근(도착 지점이 최종 위치가 아니라 맞춰지는 지점(viaDx,viaDy)이 되도록
-    // endDx/endDy를 넘긴다) 후, 남은 시간(waitMs) 동안은 같은 값을 유지해 가만히 대기한다
-    // (마지막 keyframe이 이미 viaDx,viaDy이므로 별도 keyframe 없이 duration만 늘리면
-    // WAAPI가 알아서 그 값을 끝까지 유지한다).
+    // ① 접근: 도착 지점이 최종 위치가 아니라 맞춰지는 지점(viaDx,viaDy)이 되도록
+    // endDx/endDy를 넘긴다. 길이는 딱 approachDur - 예전엔 이 접근 keyframe을
+    // "approachDur + waitMs" 전체 길이에 늘려 붙여서, 대기가 긴 카드(손패와 덱이 둘 다
+    // 먹는 턴의 손패 등)는 가만히 기다리는 게 아니라 짝까지 1초 넘게 느릿느릿 기어갔다 -
+    // 그 사이 타격음(delay + approachDur)은 카드가 아직 공중에 있을 때 먼저 터졌고, 덱
+    // 카드는 커진(오버슈트) 채로 한참 떠 있어서 "과하게 앞으로 튀어나온" 것처럼 보였다.
     const approach = buildApproachKeyframes(style, dx, dy, viaDx, viaDy, 1);
     const approachFrames = size
       ? resizeKeyframes(approach.keyframes, lerp(size.fromK, size.viaK), size.w, size.h)
       : approach.keyframes;
-    const anim1 = elm.animate(approachFrames, {
-      duration: phase1Dur, easing: approach.easing, delay,
+    elm.animate(approachFrames, {
+      duration: approachDur, easing: approach.easing, delay,
       fill: delay > 0 ? 'backwards' : 'none',
     });
+    // ② 대기: 짝 위에 그대로 멈춰 있는다(같은 transform 두 개). ①이 끝나는 순간 정확히
+    // 이어받고 ③이 시작하는 순간 정확히 놓는다(fill:'none' - 활성 구간 [시작, 끝)끼리
+    // 맞닿아 있어서 빈틈도 겹침도 없다).
+    if (waitMs > 0) {
+      const viaFrame = approachFrames[approachFrames.length - 1].transform;
+      elm.animate([{ transform: viaFrame }, { transform: viaFrame }], {
+        duration: waitMs, delay: delay + approachDur, fill: 'none',
+      });
+    }
 
     // 맞춰지는 지점 도착 타격(찌그러짐/충격링/플래시/소리) - 실제 keyframe 진행 시각과
     // 정확히 같은 시점(delay + approachDur)에 맞춰 재생한다. 이 setTimeout은 애니메이션
@@ -965,10 +980,10 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     // 한다: ①손패 낸 카드(또는 폭탄 3장) -> ②덱에서 뒤집은 카드, 순서로 페이즈를 나눈다.
     const PHASE1_DUR = approachDurFor('move'); // ①손패 페이즈(내가 낸 카드/상대가 낸 카드/폭탄)의 기준 길이
     // 페이즈 사이 호흡 - 손패를 낸 순간과 덱을 뒤집는 순간 사이가 너무 짧아서 부자연스럽다는
-    // 피드백을 받아 늘렸다(120 -> 320). 이 값은 순수하게 "손패가 다 부딪힌 뒤 덱 페이즈가
+    // 피드백을 받아 늘렸다(120 -> 320, 이후 전체 속도를 당기며 240). 이 값은 순수하게 "손패가 다 부딪힌 뒤 덱 페이즈가
     // 시작하기까지"의 호흡이라, 늘려도 각 카드 자체가 날아가는 속도(approachDurFor)나
     // 부딪힌 뒤 스윕 시작까지의 대기(HOLD)에는 영향이 없다.
-    const PHASE_GAP = 320;
+    const PHASE_GAP = 240;
     const hasHandPhase = Boolean(evt.handCardId)
       || (Array.isArray(evt.handCardIds) && evt.handCardIds.length > 0);
     const hasDeckPhase = Boolean(evt.flippedCardId || evt.drawnCardId);
@@ -981,7 +996,7 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     // 날아가는 동작 없이 불쑥 나타났다. 이제는 보너스패가 한 장씩 덱에서 뒤집혀 먹은패로 먼저
     // 날아가고, 진짜로 짝을 맞추는 덱 카드는 그만큼 뒤에(BONUS_FLIP_STEP씩) 뒤집힌다.
     const bonusDeckIds = Array.isArray(evt.bonusDeckIds) ? evt.bonusDeckIds : [];
-    const BONUS_FLIP_STEP = 550;
+    const BONUS_FLIP_STEP = 480;
     const realDeckStart = deckPhaseStart + bonusDeckIds.length * BONUS_FLIP_STEP;
 
     // 카드 id는 "3-gwang"처럼 월(月)로 시작한다(보너스패만 예외) - 캡처되는 바닥 카드가
@@ -1460,10 +1475,21 @@ function reserveAudioSlot(estimatedDurationMs) {
   return extraDelayMs / 1000;
 }
 
+// 착지음은 게이트 순서를 "기다리지" 않는다 - 카드가 짝/바닥에 닿는 바로 그 순간에 나야
+// 하는 소리라, 앞선 확인음이 아직 울린다고 뒤로 미루면 소리만 카드와 따로 놀았다(폭탄 3장은
+// 한 장씩 240ms 간격으로 벌어져 "탁...탁...탁"이 카드보다 한참 늦게 났다). 대신 재생한
+// 만큼 점유 구간은 늘려서, 뒤따르는 확인음(SOUND 맵)이 이 소리 위에 겹치지 않게 한다.
+// 거의 동시에 여러 장이 닿는 경우(폭탄 3장, 70ms 간격)는 실제로도 한 번에 "쾅" 내려치는
+// 동작이라 한 번만 울린다.
+const SLAP_MERGE_MS = 160;
+let lastSlapAt = -Infinity;
 function cardSlap(delay = 0) {
-  const gate = reserveAudioSlot(Math.max(sfxDurationOf('card-slap-real.mp3'), 120));
-  playSfx('card-slap-real.mp3', { volume: 1, rate: 0.95, delay: delay + gate });
-  beep(90, 0.12, { type: 'sine', gain: 0.24, delay: delay + gate });
+  const at = performance.now() + delay * 1000;
+  if (Math.abs(at - lastSlapAt) < SLAP_MERGE_MS) return;
+  lastSlapAt = at;
+  audioBusyUntil = Math.max(audioBusyUntil, at + Math.max(sfxDurationOf('card-slap-real.mp3'), 120) + SOUND_GAP_MS);
+  playSfx('card-slap-real.mp3', { volume: 1, rate: 0.95, delay });
+  beep(90, 0.12, { type: 'sine', gain: 0.24, delay });
 }
 
 // 카드 착지 타격음(cardSlap)은 flyCard의 anim.onfinish에서 이번 턴의 실제 행위자 카드에만
@@ -1515,8 +1541,8 @@ function sequentialDelays(firstFile, firstDelaySec, secondFile) {
 // 실제로 몇 ms 동안 자리를 차지하는지"를 예약하고 돌려받은 gate(초 단위)를, 이 묶음 안
 // 모든 playSfx/beep 호출의 delay에 똑같이 더한다 - 묶음 전체가 통째로 뒤로 밀릴 뿐 묶음
 // 내부의 상대적 타이밍(예: capture의 체크음 0.06초 뒤 챠임 0.15초)은 그대로 유지된다.
-// shake만 예외로 그 안에서 cardSlap()을 직접 부르는데, cardSlap 자신이 이미 매번
-// 게이트를 거니 여기서 또 걸 필요가 없다.
+// shake만 예외로 그 안에서 cardSlap()을 직접 부르는데(착지음 병합 간격보다 넓게 띄워서
+// 세 번 다 울리게), 착지음은 게이트를 기다리지 않고 점유 구간만 늘린다(cardSlap 참고).
 const SOUND = {
   // 그냥 내려놓기(짝 없음): 착지 타격음(cardSlap)이 이제 매 착지마다 이미 재생되므로,
   // 여기서 card-drop.mp3를 또 얹으면 오히려 소리가 흐려진다. 이 이벤트만의 특별한 추가
@@ -1561,7 +1587,7 @@ const SOUND = {
   // (마지막 카드가 착지하는 시점 근처에 맞춘 지연). beep은 길이를 정확히 알고 만드므로
   // 실측 없이 350ms(0.35s) 그대로 쓴다.
   bomb: () => { const gate = reserveAudioSlot(150 + 350); beep(80, 0.35, { type: 'square', gain: 0.22, delay: 0.15 + gate }); },
-  shake: () => { [0, 0.09, 0.18].forEach((d) => cardSlap(d)); },
+  shake: () => { [0, 0.2, 0.4].forEach((d) => cardSlap(d)); },
   go: () => {
     const gate = reserveAudioSlot(soundGroupDurationMs(['go.mp3', 0]));
     playSfx('go.mp3', { volume: 0.7, delay: gate });
@@ -2097,8 +2123,8 @@ function piValueOf(piCards) {
 // 덱에서 뒤집은 카드가 바닥 2장과 맞을 때, 서버는 "손패가 바닥에 내려앉고 덱 카드가 뒤집혀
 // 나오는" 중간 장면을 먼저 보내고 곧바로 선택을 요구한다. 선택 창을 바로 띄우면 그 창이 방금
 // 뒤집힌 카드를 가려서 무엇이 나왔는지 보지도 못한 채 고르게 된다 - 실제로는 뒤집은 패를 보고
-// 나서 고르므로, 덱 카드가 바닥에 내려앉을 만큼(덱 페이즈 시작 840ms + 비행 700ms) 기다린다.
-const REVEAL_BEFORE_CHOICE_MS = 1600;
+// 나서 고르므로, 덱 카드가 바닥에 내려앉을 만큼(덱 페이즈 시작 700ms + 비행 600ms) 기다린다.
+const REVEAL_BEFORE_CHOICE_MS = 1400;
 
 function handlePlayResponse(cardId, res) {
   if (res.ok) {
