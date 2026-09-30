@@ -142,7 +142,16 @@ button:active { transform: translateY(1px) scale(0.98); box-shadow: 0 1px 3px rg
   border: 2px solid #6b4a30;
   box-shadow: 0 3px 7px rgba(0,0,0,0.4);
   transition: transform 0.12s ease, box-shadow 0.12s ease;
-  transform-style: preserve-3d; /* 덱 뒤집기 애니메이션의 rotateY 자식 요소들이 납작해지지 않도록 */
+}
+/* 뒤집히며 나오는 비행(덱/상대 손패/새 판 배분) 동안만 3D로 그린다. 예전엔 모든 카드에 항상
+   preserve-3d + 자식들 backface-visibility:hidden이 걸려 있어서, 가만히 있는 카드 수십 장의
+   그림/뱃지/뒷면 레이어가 전부 따로 합성 레이어로 올라가 게임이 버벅였다. client.js가 그런
+   비행을 시작할 때 .flip3d를 붙이고 끝나면 뗀다. */
+.card.flip3d { transform-style: preserve-3d; }
+.card.flip3d .art-img, .card.flip3d .badge, .card.flip3d .bonus-face { backface-visibility: hidden; }
+/* 먹혀서 바닥에서 빠졌지만 아직 쓸려가지 않은 카드의 자리(client.js renderGame 참고) */
+.card.floor-ghost {
+  visibility: hidden; pointer-events: none; box-shadow: none; transition: none;
 }
 /* 키보드로 Tab 이동해서 카드를 고를 때(role="button"인 카드만) 어디에 포커스가 있는지 보이게
    한다 - 다른 곳(입력칸/opponent-card 등)과 같은 금색 톤으로 통일. */
@@ -157,7 +166,7 @@ button:active { transform: translateY(1px) scale(0.98); box-shadow: 0 1px 3px rg
    .card 자신이 JS에서 rotateY(180deg)->0deg로 회전하는 동안 180deg 근처에서는 이 뒷면이,
    0deg 근처에서는 실제 콘텐츠가 보인다(평소 정지 상태에선 이 뒷면 레이어는 180deg로 고정돼
    있어 항상 숨어 있으므로 화면상 아무 변화가 없다). */
-.card::before {
+.card.flip3d::before {
   content: '';
   position: absolute; inset: 0; border-radius: inherit;
   background-color: #184a32;
@@ -168,9 +177,8 @@ button:active { transform: translateY(1px) scale(0.98); box-shadow: 0 1px 3px rg
   z-index: 2;
   pointer-events: none;
 }
-.card.mini::before { background-size: 18px 12px; }
+.card.mini.flip3d::before { background-size: 18px 12px; }
 .card.back::before { display: none; } /* 카드 뒷면 자체는 별도 뒷면 레이어가 필요없음 */
-.card .art-img, .card .badge, .card .bonus-face { backface-visibility: hidden; }
 .card.gwang {
   border-color: var(--gold);
   box-shadow: 0 3px 7px rgba(0,0,0,0.4), 0 0 11px rgba(232,193,90,0.6);

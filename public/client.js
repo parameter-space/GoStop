@@ -158,7 +158,15 @@ function cardEl(card, { onClick, selected, mini, onFlexToggle } = {}) {
   if (card.stuck) div.classList.add('stuck');
   if (selected) div.classList.add('selected');
   const seenKey = card.id + ':' + (card.stuck ? 'stuck' : 'flat');
-  if (!seenCardIds.has(seenKey)) div.classList.add('pop');
+  if (!seenCardIds.has(seenKey)) {
+    div.classList.add('pop');
+    // 등장 효과가 끝나면 클래스를 바로 뗀다. 먹은패 카드는 엘리먼트를 계속 재사용해서(cachedCardEl)
+    // 이 클래스가 영원히 남아 있었고, animateNewCards가 크기를 재려고 매 턴 pop을 뗐다 다시
+    // 붙일 때마다 먹은패 더미 전체가 0.4배로 줄었다 커지는 등장 효과를 다시 재생했다(렉의 원인).
+    div.addEventListener('animationend', (e) => {
+      if (e.animationName === 'cardPop') div.classList.remove('pop');
+    });
+  }
   seenCardIds.add(seenKey);
   div.dataset.id = card.id;
   div.setAttribute('aria-label', cardAriaLabel(card));
@@ -565,6 +573,7 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
   // 지금 막 새 애니메이션을 받으려는 그 카드 자신에 대해서만, 꼭 필요한 만큼만 정리한다.
   function cancelPriorAnim(elm) {
     elm.getAnimations().forEach((a) => { try { a.cancel(); } catch (e) { /* 이미 끝났으면 무시 */ } });
+    elm.classList.remove('flip3d');
     // cancel()은 onfinish를 안 불러주므로, 이전 애니메이션이 suspendClip으로 들고 있던
     // 카운터를 그 onfinish 안의 restoreClip이 영영 못 돌려준다 - 여기서 대신 돌려준다.
     if (elm.dataset.clipHeld === '1') restoreClip(elm, elm.closest('.cap-groups'));
@@ -626,7 +635,10 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
   // 그 뒤 비행 곡선을 "offset = 실제 시각"으로 다시 짜면서(buildApproachKeyframes) 카드가 닿는
   // 순간이 확실해졌기 때문에, 길이 자체는 조금 더 줄였다(600/460 -> 560/440). 닿는 순간은 덱
   // 448ms, 손 343ms이고 그 뒤는 눌렸다 돌아오는 정착이다.
-  function approachDurFor(style) { return style === 'deck' ? 560 : 440; }
+  function approachDurFor(style) {
+    if (style === 'slide') return 180;
+    return style === 'deck' ? 560 : 440;
+  }
 
   // 마지막(가장 늦은) 페이즈의 카드가 부딪힌 뒤에도, 전역 스윕이 시작되기까지 아주 잠깐
   // 더 멈춰 있는 여유(격투 게임의 히트스톱과 비슷한 "타격의 무게감"을 위한 짧은 정지).
@@ -660,6 +672,17 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
   const LIFT_EASE = 'cubic-bezier(.25,.7,.4,1)';
   const SLAP_EASE = 'cubic-bezier(.55,0,.9,.55)';
   function buildApproachKeyframes(style, dx, dy, endDx = 0, endDy = 0) {
+    // 'slide': 먹힌 바닥 짝이 (바닥 배치가 바뀌어) 자기 자리표시 위치로 살짝 옮겨 앉는 것 -
+    // 던지는 동작이 아니라 타격도 없다(hitAt 없음).
+    if (style === 'slide') {
+      return {
+        hitAt: null,
+        keyframes: [
+          { offset: 0, transform: tf(dx, dy, 1, 0, 0), easing: 'cubic-bezier(.3,.7,.4,1)' },
+          { offset: 1, transform: tf(endDx, endDy, 1, 0, 0) },
+        ],
+      };
+    }
     const hitAt = style === 'deck' ? 0.8 : 0.78;
     const squashAt = hitAt + 0.08;
     let lifted;
@@ -794,6 +817,8 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     // 모양(되감기 자세 없음)으로 재생해서 "함께 쓸려 들어간다"는 게 보이게 한다.
     const built = sweepStyle ? buildSweepKeyframes(dx, dy) : buildFlightKeyframes(style, dx, dy);
     const keyframes = size ? resizeKeyframes(built.keyframes, shrinkEarly(size.fromK, 1), size.w, size.h) : built.keyframes;
+    // 뒷면에서 뒤집히며 나오는 비행만 3D로 그린다(style.css .flip3d 참고).
+    if (!sweepStyle && (style === 'deck' || style === 'hand')) elm.classList.add('flip3d');
 
     const anim = elm.animate(keyframes, { duration: DUR, easing: 'linear', delay, fill: delay > 0 ? 'backwards' : 'none' });
 
@@ -809,6 +834,7 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
       elm.style.zIndex = '';
       elm.style.willChange = '';
       elm.style.transition = '';
+      elm.classList.remove('flip3d');
       restoreClip(elm, clipContainer);
       // 이 elm이 다른 렌더에서 이미 재사용/철거됐으면(예: DOM에서 빠진 detached 상태) 어떤
       // 후처리 효과도 재생하지 않고 조용히 넘어간다 - detached 엘리먼트의
@@ -871,10 +897,13 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     const approachFrames = size
       ? resizeKeyframes(approach.keyframes, lerp(size.fromK, size.viaK), size.w, size.h)
       : approach.keyframes;
+    if (style === 'deck' || style === 'hand') elm.classList.add('flip3d');
     const anim1 = elm.animate(approachFrames, {
       duration: approachDur, easing: 'linear', delay,
       fill: delay > 0 ? 'backwards' : 'none',
     });
+    // 접근이 끝나면 이미 앞면이라 3D가 더 필요 없다.
+    anim1.onfinish = () => elm.classList.remove('flip3d');
     // ② 대기: 짝 위에 그대로 멈춰 있는다(같은 transform 두 개). ①이 끝나는 순간 정확히
     // 이어받고 ③이 시작하는 순간 정확히 놓는다(fill:'none' - 활성 구간 [시작, 끝)끼리
     // 맞닿아 있어서 빈틈도 겹침도 없다).
@@ -886,7 +915,7 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     }
 
     // 짝에 "탁" 닿는 순간(hitAt)의 타격(충격링/플래시/소리).
-    scheduleHit(elm, myGen, delay + approach.hitAt * approachDur, anim1);
+    if (approach.hitAt != null) scheduleHit(elm, myGen, delay + approach.hitAt * approachDur, anim1);
 
     // ③ 스윕: flyCard의 sweepStyle과 완전히 같은 모양(buildSweepKeyframes)을 맞춰지는
     // 지점(viaDx,viaDy) -> 최종 위치(0,0)로 재생한다. anim1이 끝나는 바로 그
@@ -967,6 +996,14 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     // (출처를 모르는) 카드에만 맨 끝에서 다시 붙인다.
     const popped = [...document.querySelectorAll('.card.pop')];
     popped.forEach((elm) => elm.classList.remove('pop'));
+    // 이번 턴에 먹혀서 바닥에서 빠진 카드들의 자리표시(renderGame의 floor-ghost) 위치 - 짝들은
+    // 쓸려가기 전까지 여기 앉아 있는다(바닥 배치가 바뀌었으면 이 자리로 살짝 옮겨 앉는다).
+    const ghostRects = new Map();
+    let ghostSeq = null;
+    document.querySelectorAll('.floor-ghost[data-ghost-id]').forEach((g) => {
+      ghostRects.set(g.dataset.ghostId, g.getBoundingClientRect());
+      ghostSeq = g.dataset.ghostSeq;
+    });
     // 한 턴 안에서도 실제로는 "손패를 낸다 -> (짝이 맞으면 탁) -> 덱을 뒤집는다 ->
     // (짝이 맞으면 또 탁) -> 그제서야 먹은 패들이 내 앞으로 쓸려 들어온다"처럼 순서가 있는
     // 사건인데, 예전에는 이 모든 카드가 한 렌더 안에서 전부 동시에 날아가고 있었다(그래서
@@ -1021,7 +1058,7 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
         if (!oldFloorIds || !oldFloorIds.has(pid)) return;
         const m = cardMonth(pid);
         if (m == null) return;
-        const rect = oldRects.get(pid);
+        const rect = ghostRects.get(pid) || oldRects.get(pid);
         if (!rect) return;
         if (!partnersByMonth.has(m)) partnersByMonth.set(m, []);
         partnersByMonth.get(m).push({ pid, rect });
@@ -1100,7 +1137,7 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     const deckCaptures = Boolean(deckCardElm && willCapture(deckCardElm));
     const isJjok = hasHandPhase && hasDeckPhase && handCaptures && !handPartner
       && handCardMonth != null && handCardMonth === flippedCardMonth;
-    const jjokSpot = isJjok ? floorFreeSpot() : null;
+    const jjokSpot = isJjok ? (ghostRects.get(evt.handCardId) || floorFreeSpot()) : null;
     // "손패를 낸다(짝이 있으면 탁) -> 덱을 뒤집는다(짝이 있으면 또 탁) -> 그제서야 이번
     // 턴에 맞춰진 카드들이 전부 한꺼번에 내 먹은패로 쓸려 들어간다"는 순서를 지키기 위해,
     // 실제로 캡처가 걸린 페이즈들 중 가장 늦게 "탁" 하는 시점(+HOLD)을 전역 스윕 시작
@@ -1202,7 +1239,8 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
           // 겹쳐 보인다. 그래서 바닥에서 뭔가 실제로 빠져나가기 시작하는 가장 늦은 시점
           // (lastDepartureStart)까지 이 미끄러짐도 같이 기다린다.
           const isFloorCard = Boolean(elm.closest('.floor'));
-          const ambientDelay = isFloorCard ? lastDepartureStart : 0;
+          // 자리표시가 먹힌 짝들의 자리를 지켜주고 있으면 기다릴 이유가 없다 - 바로 옮겨 앉는다.
+          const ambientDelay = isFloorCard && !ghostRects.size ? lastDepartureStart : 0;
           if (DEBUG_ANIM) logAnim('[anim]', id, 'ambient reposition', { dx, dy, ambientDelay });
           elm.classList.remove('pop');
           // 이 엘리먼트에 이전 렌더에서 걸어둔 애니메이션(예: 캡처 비행)이 아직 안 끝났으면
@@ -1292,6 +1330,12 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
       } else if (primary && id === deckCardId) {
         viaRect = isJjok ? offsetRect(jjokSpot, HIT_DX, HIT_DY)
           : (deckPartner ? offsetRect(deckPartner.rect, HIT_DX, HIT_DY) : null);
+      } else if (isSweptCapture && ghostRects.has(id)) {
+        // 먹힌 바닥 짝: 곧바로 스윕 시각까지 제자리(이전 위치)에 붙박여 있지 않고, 바뀐 바닥
+        // 배치의 자기 자리표시 위치로 다른 바닥 카드들과 함께 옮겨 앉았다가 거기서 쓸려간다.
+        viaRect = ghostRects.get(id);
+        style = 'slide';
+        delay = 0;
       }
 
       // 이 카드가 작은(미니) 카드로 도착하면(상대방 먹은패 더미) 출발/경유 지점에서는 보통
@@ -1324,6 +1368,12 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
       if (primary || willCapture(elm)) primaryAnims.push(anim);
     });
 
+    // 짝들이 쓸려가기 시작하는 순간 자리표시를 걷어내고 바닥을 당긴다.
+    if (ghostSeq) {
+      const collapseAt = (handCaptures || deckCaptures) ? globalSweepStart : 0;
+      setTimeout(() => collapseFloorGhosts(ghostSeq), collapseAt);
+    }
+
     // 덱에서 뒤집은 카드가 바닥의 2장과 매치되는 드문 경우(NEED_CHOICE2), 선택이 끝나기 전에
     // 미리 보내는 'deck_reveal' 중계 이벤트는 그 카드가 아직 floor/captured 어디에도 실제로
     // 렌더링되지 않은 상태다(선택 대기 중이라 pendingChoice2 안에 떠 있을 뿐). 그래서 위 루프의
@@ -1352,9 +1402,38 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     // 마이크로태스크에서 풀려 사실상 즉시 재생된다.
     const turnDone = Promise.all(primaryAnims.map((a) => a.finished.catch(() => {})));
     if (isNewGameEvent && evt.kind) turnDone.then(() => handleGameEvent(evt));
+    // 이번 렌더에서 새로 만들어진(아직 등장 효과가 안 끝난) 카드 중 비행을 안 받은 것만 되살린다.
     popped.forEach((elm) => { if (elm.isConnected && !elm.getAnimations().length) elm.classList.add('pop'); });
     resolveTurnDone(turnDone);
   }));
+}
+
+// 먹힌 짝들이 쓸려가기 시작할 때 그 자리표시(floor-ghost)를 걷어내고, 그만큼 당겨지는 바닥
+// 카드들을 부드럽게 옮긴다. 그 사이 새 렌더로 바닥이 다시 그려졌으면(자리표시 번호가 다름)
+// 아무것도 하지 않는다. 옮기는 애니메이션은 composite:'add'라, 마침 날아오던 중인 카드(덱에서
+// 뒤집혀 막 내려앉는 카드 등)의 비행에 그대로 더해져서 비행을 끊지 않는다.
+function collapseFloorGhosts(seq) {
+  const ghosts = [...document.querySelectorAll(`.floor-ghost[data-ghost-seq="${seq}"]`)];
+  if (!ghosts.length) return;
+  const cards = [...document.querySelectorAll('.floor .card[data-id]')];
+  const before = new Map(cards.map((e) => [e, e.getBoundingClientRect()]));
+  ghosts.forEach((g) => {
+    const group = g.parentElement;
+    g.remove();
+    if (!group) return;
+    if (!group.children.length) { group.remove(); return; }
+    [...group.children].forEach((c, i) => { c.style.marginLeft = i > 0 ? '-46px' : ''; });
+  });
+  if (prefersReducedMotion()) return;
+  cards.forEach((e) => {
+    const b = before.get(e);
+    const a = e.getBoundingClientRect();
+    const dx = b.left - a.left;
+    const dy = b.top - a.top;
+    if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+    e.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'translate(0px, 0px)' }],
+      { duration: 240, easing: 'cubic-bezier(.3,.7,.4,1)', composite: 'add' });
+  });
 }
 
 // 새 판 시작: 섞은 더미에서 바닥과 내 손패로 한 장씩 나눠주는 모습. 매 판 같은 50장(같은 id)을
@@ -1379,11 +1458,14 @@ function dealCardsAnimation() {
       const dx = deckRect.left + deckRect.width / 2 - (now.left + now.width / 2);
       const dy = deckRect.top + deckRect.height / 2 - (now.top + now.height / 2);
       // 구간별 easing(offset = 실제 시각): 더미 위에서 뒤집어 들고(감속) 제자리에 내려놓는다.
-      return elm.animate([
+      elm.classList.add('flip3d');
+      const a = elm.animate([
         { offset: 0, transform: `translate(${dx}px, ${dy}px) scale(0.55) rotateY(180deg)`, easing: 'cubic-bezier(.3,.6,.4,1)' },
         { offset: 0.4, transform: `translate(${dx * 0.7}px, ${dy * 0.7 - 16}px) scale(0.95) rotateY(0deg)`, easing: 'cubic-bezier(.45,0,.3,1)' },
         { offset: 1, transform: 'translate(0px, 0px) scale(1) rotateY(0deg)' },
       ], { duration: 360, easing: 'linear', delay: i * DEAL_STEP, fill: 'backwards' });
+      a.finished.then(() => elm.classList.remove('flip3d'), () => elm.classList.remove('flip3d'));
+      return a;
     });
     if (deckStack) {
       deckStack.classList.remove('flipping');
@@ -1922,6 +2004,10 @@ function renderRoom(state) {
 
 // ---------- 게임 화면 ----------
 let lastSeenRoundNumber = null;
+// 바닥 자리표시(floor-ghost)용: 직전 렌더의 바닥 카드 목록과 그 판 번호, 렌더 번호.
+let prevFloorCards = [];
+let prevFloorRound = null;
+let floorRenderSeq = 0;
 
 // 렌더가 "띄워야 한다"고 판단한 모달들. 실제로 띄우는 건 그 렌더의 카드 애니메이션이 끝난 뒤
 // (+ 배너/효과음이 먼저 들리도록 약간의 여유)이다. 그 사이 새 상태가 오면 그 렌더의 판단이
@@ -2016,22 +2102,58 @@ function renderGame(state) {
   // 바닥에 같은 월 카드가 여러 장 있으면(뻑 더미 등) 살짝 겹쳐서 한 무더기처럼 보이게 묶는다
   const floorDiv = el('floor');
   floorDiv.innerHTML = '';
+  // 이번 턴에 먹혀서 바닥에서 빠진 카드 자리는 보이지 않는 자리표시(floor-ghost)로 잠깐 남겨둔다.
+  // 서버 상태에선 이미 먹은패로 옮겨졌지만, 화면에선 쓸려가기 전까지 그 짝들이 원래 자리에 그대로
+  // 앉아 있다 - 자리를 비워버리면 바닥 배치가 곧바로 당겨져서, 뒤집은 덱 카드가 "비었다고
+  // 계산된" 그 자리(실제로는 아직 짝들이 앉아 있는 곳)에 내려앉아 짝들 아래로 숨어버렸다.
+  // 스윕이 시작되는 순간 animateNewCards가 이 자리표시를 걷어내며 바닥을 부드럽게 당긴다.
+  // 쪽은 손패가 잠깐 바닥 빈자리에 놓였다가 덱 카드와 함께 먹히므로 그 자리도 남긴다.
+  floorRenderSeq += 1;
+  const floorIds = new Set(round.floor.map((c) => c.id));
+  const prevOrder = new Map(prevFloorCards.map((c, i) => [c.id, i]));
+  const ghostCards = prevFloorRound === state.roundNumber
+    ? prevFloorCards.filter((c) => !floorIds.has(c.id)) : [];
+  const evtIsNew = eventSeqInitialized && round.lastEvent && round.lastEvent.seq > lastSeenEventSeq;
+  if (evtIsNew && round.lastEvent.kind === 'jjok' && round.lastEvent.handCardId) {
+    const jid = round.lastEvent.handCardId;
+    const jm = parseInt(jid, 10);
+    if (!floorIds.has(jid) && !ghostCards.some((c) => c.id === jid) && !Number.isNaN(jm)) {
+      ghostCards.push({ id: jid, month: jm });
+    }
+  }
   const floorByMonth = new Map();
   round.floor.forEach((c) => {
     if (!floorByMonth.has(c.month)) floorByMonth.set(c.month, []);
     floorByMonth.get(c.month).push(c);
   });
+  ghostCards.forEach((c) => {
+    if (!floorByMonth.has(c.month)) floorByMonth.set(c.month, []);
+    floorByMonth.get(c.month).push({ ...c, ghost: true });
+  });
+  // 무더기 안에서는 직전 렌더의 순서를 지킨다(자리표시가 원래 자리에 남도록), 새 카드는 뒤로.
+  const orderOf = (c) => (prevOrder.has(c.id) ? prevOrder.get(c.id) : Infinity);
   [...floorByMonth.keys()].sort((a, b) => a - b).forEach((month) => {
     const group = document.createElement('div');
     group.className = 'floor-group';
-    floorByMonth.get(month).forEach((c, i) => {
-      const onClick = canAct && selectedHandCardId ? () => tryPlay(selectedHandCardId, c.id) : null;
-      const cel = cardEl(c, { onClick });
+    floorByMonth.get(month).sort((a, b) => orderOf(a) - orderOf(b)).forEach((c, i) => {
+      let cel;
+      if (c.ghost) {
+        cel = document.createElement('div');
+        cel.className = 'card floor-ghost';
+        cel.dataset.ghostId = c.id;
+        cel.dataset.ghostSeq = String(floorRenderSeq);
+        cel.setAttribute('aria-hidden', 'true');
+      } else {
+        const onClick = canAct && selectedHandCardId ? () => tryPlay(selectedHandCardId, c.id) : null;
+        cel = cardEl(c, { onClick });
+      }
       if (i > 0) cel.style.marginLeft = '-46px';
       group.appendChild(cel);
     });
     floorDiv.appendChild(group);
   });
+  prevFloorCards = round.floor.map((c) => ({ id: c.id, month: c.month }));
+  prevFloorRound = state.roundNumber;
 
   // 내 정보
   el('my-score').textContent = `내 점수: ${me.score}점`;
