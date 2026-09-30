@@ -958,6 +958,15 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
   // 이번 턴의 카드들이 전부 내려앉는 시점에 풀리는 Promise를 돌려준다(고/스톱·결과 창을 그
   // 뒤에 띄우는 데 쓴다 - showDeferredModals 참고).
   return new Promise((resolveTurnDone) => requestAnimationFrame(() => {
+    // 처음 화면에 나온 카드(덱에서 뒤집은 카드, 상대가 낸 카드 등)에는 cardEl이 등장 효과
+    // .pop(CSS 애니메이션, scale 0.4에서 시작)을 붙여둔다. 아래에서 카드마다 도착 위치/크기를
+    // getBoundingClientRect()로 재는데, 이 값은 transform을 포함하므로 pop이 켜진 채로 재면
+    // 78px 카드가 31px로 잡힌다 - 그러면 "작은(미니) 더미로 들어가는 카드"로 오인해 보통
+    // 크기로 보이게 한다며 2.5배 확대 보정을 걸어서, 덱에서 뒤집은 카드가 두 배 넘게 커진 채로
+    // 짝에게 날아갔다(위치도 그만큼 어긋났다). 재기 전에 전부 떼고, 비행 애니메이션을 안 받은
+    // (출처를 모르는) 카드에만 맨 끝에서 다시 붙인다.
+    const popped = [...document.querySelectorAll('.card.pop')];
+    popped.forEach((elm) => elm.classList.remove('pop'));
     // 한 턴 안에서도 실제로는 "손패를 낸다 -> (짝이 맞으면 탁) -> 덱을 뒤집는다 ->
     // (짝이 맞으면 또 탁) -> 그제서야 먹은 패들이 내 앞으로 쓸려 들어온다"처럼 순서가 있는
     // 사건인데, 예전에는 이 모든 카드가 한 렌더 안에서 전부 동시에 날아가고 있었다(그래서
@@ -1343,6 +1352,7 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     // 마이크로태스크에서 풀려 사실상 즉시 재생된다.
     const turnDone = Promise.all(primaryAnims.map((a) => a.finished.catch(() => {})));
     if (isNewGameEvent && evt.kind) turnDone.then(() => handleGameEvent(evt));
+    popped.forEach((elm) => { if (elm.isConnected && !elm.getAnimations().length) elm.classList.add('pop'); });
     resolveTurnDone(turnDone);
   }));
 }
