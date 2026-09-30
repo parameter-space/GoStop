@@ -12,6 +12,9 @@ process.env.PORT = String(PORT);
 // 접속 끊긴 사람 자동 진행 타이머를 실제로(몇십 초씩) 기다릴 수 없으니 테스트용으로 짧게 줄인다
 const AUTO_PLAY_DELAY_MS = 150;
 process.env.AUTO_PLAY_DELAY_MS = String(AUTO_PLAY_DELAY_MS);
+// 모두가 끊긴 방을 정리하기까지의 유예 시간(실서버 30분)도 테스트용으로 짧게 줄인다
+const ROOM_ABANDON_TTL_MS = 400;
+process.env.ROOM_ABANDON_TTL_MS = String(ROOM_ABANDON_TTL_MS);
 // performAutoPlay/scheduleAutoPlayIfNeeded는 소켓 없이 Room 인스턴스만으로 동작하는 순수
 // 함수라, 실제 소켓 왕복 없이도 이 파일 안에서 직접 단위 테스트할 수 있게 index.js가 내보낸다.
 const { performAutoPlay, rooms } = require('../index'); // 이 시점에 실제 server/index.js가 그대로 listen()까지 실행됨
@@ -241,6 +244,36 @@ async function waitUntil(fn, { timeout = 3000, interval = 80 } = {}) {
       '아무도 안 쓰는 방들이 서버가 오래 켜져 있는 동안 계속 쌓여 메모리를 낭비한다');
 
     h.socket.close();
+  });
+
+  await section('게임 도중 모두가 접속을 끊은 채 유예 시간이 지나면 방이 정리된다', async () => {
+    const h = await connectAndCreate('HostF');
+    const g = await connectAndJoin('GuestF', h.res.roomCode);
+    const roomCode = h.res.roomCode;
+    await emit(h.socket, 'game:start', {});
+    h.socket.close();
+    g.socket.close();
+    await new Promise((r) => setTimeout(r, 150));
+    assert.ok(rooms.has(roomCode), '끊기자마자 지우면 잠깐 끊긴 사람이 재접속할 기회가 없다');
+    const gone = await waitUntil(() => !rooms.has(roomCode), { timeout: ROOM_ABANDON_TTL_MS + 2000 });
+    assert.ok(gone, '아무도 안 돌아오는 방이 rooms Map에 영구히 남으면 안 됨');
+  });
+
+  await section('모두 끊겼어도 유예 시간 안에 한 명이 재접속하면 방은 유지된다', async () => {
+    const h = await connectAndCreate('HostG');
+    const g = await connectAndJoin('GuestG', h.res.roomCode);
+    const { roomCode, playerId } = h.res;
+    await emit(h.socket, 'game:start', {});
+    h.socket.close();
+    g.socket.close();
+    await new Promise((r) => setTimeout(r, 150));
+    const back = ioClient(url, { transports: ['websocket'] });
+    await new Promise((resolve) => back.on('connect', resolve));
+    const rejoin = await emit(back, 'room:rejoin', { roomCode, playerId });
+    assert.strictEqual(rejoin.ok, true);
+    await new Promise((r) => setTimeout(r, ROOM_ABANDON_TTL_MS + 300));
+    assert.ok(rooms.has(roomCode), '재접속한 사람이 있는데 방이 지워지면 안 됨');
+    back.close();
   });
 
   console.log('\n소켓 권한 테스트 완료');

@@ -132,12 +132,40 @@ function performAutoPlay(room, playerId) {
   }
 }
 
+// 게임 도중 모두가 접속을 끊은 방은 재접속을 기다리느라 일부러 안 지워왔는데, 아무도 안
+// 돌아오면 서버가 켜져 있는 내내 rooms Map에 계속 쌓였다(방 코드도 영영 재사용 못 함). 모두가
+// 끊긴 채로 이 시간이 지나면 방을 정리하고, 그 전에 한 명이라도 돌아오면 취소한다.
+const ROOM_ABANDON_TTL_MS = Number(process.env.ROOM_ABANDON_TTL_MS) || 30 * 60 * 1000;
+const abandonTimers = new Map(); // room.code -> Timeout
+
+function clearAbandonTimer(code) {
+  const t = abandonTimers.get(code);
+  if (t) clearTimeout(t);
+  abandonTimers.delete(code);
+}
+
+function checkAbandoned(room) {
+  if (room.players.some((p) => p.connected)) {
+    clearAbandonTimer(room.code);
+    return;
+  }
+  if (abandonTimers.has(room.code)) return;
+  abandonTimers.set(room.code, setTimeout(() => {
+    abandonTimers.delete(room.code);
+    if (rooms.get(room.code) !== room || room.players.some((p) => p.connected)) return;
+    rooms.delete(room.code);
+    clearAutoPlayTimer(room.code);
+    for (const p of room.players) socketMeta.delete(p.socketId);
+  }, ROOM_ABANDON_TTL_MS));
+}
+
 function broadcast(room) {
   for (const p of room.players) {
     if (!p.connected) continue;
     io.to(p.socketId).emit('room:state', room.publicState(p.id));
   }
   scheduleAutoPlayIfNeeded(room);
+  checkAbandoned(room);
 }
 
 function getRoomOrFail(code) {
@@ -216,6 +244,7 @@ io.on('connection', (socket) => {
         // 안 지우면 아무도 안 쓰는 빈 방 객체가 서버가 켜져 있는 내내 메모리에 계속
         // 쌓이고, 그 방 코드도 영원히 재사용 못 하게 묶여버린다.
         rooms.delete(code);
+        clearAbandonTimer(code);
         clearAutoPlayTimer(code);
       } else {
         ctx.room.addLog(`${name}님이 방을 나갔습니다.`);
@@ -406,6 +435,7 @@ io.on('connection', (socket) => {
         }
       }
       rooms.delete(code);
+      clearAbandonTimer(code);
       clearAutoPlayTimer(code);
       cb?.({ ok: true });
     } catch (e) {
