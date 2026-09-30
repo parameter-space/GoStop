@@ -1579,9 +1579,29 @@ function nudgeBoard() {
   board.classList.add('nudge');
 }
 
+// 흔든 3장을 화면 가운데에 잠깐 펼쳐 보인다. 이 사본들은 순수 표시용이라 data-id를 떼서,
+// 애니메이션 로직이 id로 카드를 찾을 때(.card[data-id]) 진짜 카드 대신 이 사본을 잡는 일이 없게 한다.
+function showShakeReveal(cards) {
+  if (!Array.isArray(cards) || !cards.length) return;
+  document.querySelectorAll('.shake-reveal').forEach((n) => n.remove());
+  const wrap = document.createElement('div');
+  wrap.className = 'shake-reveal';
+  wrap.setAttribute('aria-hidden', 'true');
+  cards.forEach((c) => {
+    const cel = cardEl(c);
+    cel.removeAttribute('data-id');
+    cel.classList.remove('pop');
+    wrap.appendChild(cel);
+  });
+  document.body.appendChild(wrap);
+  setTimeout(() => wrap.remove(), 1900);
+}
+
 function handleGameEvent(evt) {
-  const label = EVENT_LABEL[evt.kind];
+  // 고는 몇 번째 고인지가 중요하다(2고부터 배율이 붙음) - "고!"만 뜨면 알 수 없었다.
+  const label = evt.kind === 'go' && evt.goCount ? `${evt.goCount}고!` : EVENT_LABEL[evt.kind];
   if (label) showBanner(`${evt.playerName ? evt.playerName + ' ' : ''}${label}`);
+  if (evt.kind === 'shake') showShakeReveal(evt.shakeCards);
   const soundKey = EVENT_SOUND[evt.kind];
   if (soundKey && SOUND[soundKey]) SOUND[soundKey]();
   if (evt.kind === 'bomb' || evt.kind === 'sweep') shakeBoard();

@@ -325,7 +325,10 @@ class Room {
     this.assertActionAllowed(playerId);
     engine.declareShake(r, playerId, month);
     this.addLog(`${this.playerName(playerId)}님이 흔들었습니다!`);
-    this.pushEvent('shake', playerId);
+    // 흔들기는 실제로 같은 월 3장을 모두에게 펼쳐 보이는 선언이라, 그 3장은 이제 공개 정보다 -
+    // 다른 사람 화면에도 어떤 패를 흔들었는지 보여줄 수 있게 카드 자체를 실어 보낸다.
+    const shakeCards = r.hand[playerId].filter((c) => c.month === month);
+    this.pushEvent('shake', playerId, { shakeCards });
   }
 
   playerName(id) {
