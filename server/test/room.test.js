@@ -256,6 +256,26 @@ section('스톱을 선언해 이기면, 더 이상 유효하지 않은 고/스�
     'stop으로 판이 끝났으면 pendingGoStop도 반드시 함께 지워져야 다른 모달과 겹쳐 뜨지 않는다');
 });
 
+section('마지막 패(모두 손패 소진)에서 점수가 나면 고/스톱을 묻지 않고 자동으로 스톱(승리)한다', () => {
+  // 더 둘 턴이 없는데 고/스톱 창을 띄우면, 고를 누르는 순간 나가리로 처리돼 이긴 판을
+  // 날려버릴 수 있었다(실제 고스톱도 막판에는 고를 못 하고 자동 스톱).
+  const byId = Object.fromEntries(buildDeck().map((c) => [c.id, c]));
+  const room = makeRoomWithRound({
+    playerIds: ['a', 'b'],
+    hand: { a: [byId['11-pi-a']], b: [] },
+    floor: [{ ...byId['11-gwang'], placedBy: 'deck', stuck: false }],
+    deck: [],
+  });
+  const a = room.round.players[0];
+  a.captured.gwang.push(byId['1-gwang'], byId['3-gwang'], byId['8-gwang']);
+  a.captured.tti.push(byId['1-tti'], byId['2-tti'], byId['3-tti']); // 홍단 3점
+  const res = room.playCard('a', '11-pi-a'); // 광 4장(4점) + 홍단(3점) = 7점(맞고 문턱)
+  assert.strictEqual(res.status, 'round-end', '마지막 패에서 문턱을 넘으면 곧바로 판이 끝나야 함');
+  assert.strictEqual(room.round.lastResult.result, 'win', '나가리가 아니라 승리로 끝나야 함');
+  assert.strictEqual(room.round.lastResult.winnerId, 'a');
+  assert.strictEqual(room.round.pendingGoStop, null, '고/스톱 대기 상태가 남으면 안 됨');
+});
+
 section('라운드 결과에는 그 판 정산에 실제로 쓰인 점당 금액이 스냅샷으로 남고, 이후 점당 금액이 바뀌어도 그대로 유지된다', () => {
   // setPointValue는 phase를 안 가리고 언제든(라운드 종료 후, 다음 판을 시작하기 전이라도)
   // 호스트가 바꿀 수 있다. client.js의 결과 화면은 이 스냅샷(pointValueAtSettlement)으로

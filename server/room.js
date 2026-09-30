@@ -362,6 +362,14 @@ class Room {
       return this.finishAsNagari();
     }
 
+    // 마지막 패(모두의 손패가 다 떨어진 턴)에서 점수가 나면 더 둘 턴이 없으므로 "고"는 의미가
+    // 없다 - 실제 고스톱에서도 막판에는 고를 못 하고 자동으로 스톱이다. 예전엔 여기서도 고/스톱
+    // 창을 띄워서, 고를 누르면 곧바로 나가리로 처리돼 이긴 판을 실수 한 번에 날릴 수 있었다.
+    if (eligible && this.isRoundOver()) {
+      this.addLog(`${this.playerName(playerId)}님: 마지막 패라 자동으로 스톱합니다.`);
+      return this.finishRound(playerId, rp.goCount);
+    }
+
     if (eligible) {
       r.phase = 'await-gostop';
       r.pendingGoStop = { playerId, score };
