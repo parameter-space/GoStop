@@ -201,7 +201,19 @@ class Room {
       result = engine.skipDeckFlip(r, playerId);
     } else {
       handCardId = cardId;
-      result = engine.playTurn(r, playerId, cardId, chosenFloorId);
+      try {
+        result = engine.playTurn(r, playerId, cardId, chosenFloorId);
+      } catch (e) {
+        // 덱에서 뒤집은 카드가 바닥 2장과 맞아 선택 대기(NEED_CHOICE2)로 멈춘 턴은, 이미 이
+        // 손패를 낸 상태다. 이 카드 id를 대기 상태에 같이 적어둬야 화면에 "손패가 바닥에
+        // 내려앉고 덱 카드가 뒤집혀 있는" 중간 장면(deck_reveal)을 그릴 수 있고, 그 장면이
+        // 브로드캐스트되지 않은 채 곧장 마무리되는 경로(자동 진행)에서도 손패의 출처를 알려줄 수 있다.
+        if (e && e.code === 'NEED_CHOICE2') {
+          e.handCardId = handCardId;
+          if (r.pendingChoice2) r.pendingChoice2.handCardId = handCardId;
+        }
+        throw e;
+      }
     }
     this.addLog(this.describeEvents(playerId, result.events));
     // handCardId/flippedCardId를 클라이언트에 넘겨서, "손에서 나가는" 애니메이션과
@@ -213,6 +225,7 @@ class Room {
     this.emitPrimaryEvent(playerId, result.events, result.captured, {
       handCardId, flippedCardId: result.flippedCard ? result.flippedCard.id : null,
       chosenFloorId: chosenFloorId || null,
+      chosenFor: chosenFloorId ? 'hand' : null,
     });
     return this.afterAction(playerId, result);
   }
@@ -231,11 +244,18 @@ class Room {
     const r = this.round;
     if (!r) throw new Error('진행 중인 판이 없습니다');
     if (r.phase === 'round-end') throw new Error('이미 끝난 판입니다');
+    // engine.resolveChoice2가 pendingChoice2를 지우므로 그 전에 읽어둔다. 중간 장면(deck_reveal)이
+    // 이미 화면에 나갔다면 손패는 그때 바닥에 내려앉았으므로 이번엔 "바닥에 있던 카드"로 쓸려가면
+    // 되고, 안 나갔다면(자동 진행) 손패가 손에서 곧장 나오는 것으로 그려야 하니 id를 넘겨준다.
+    const pending = r.pendingChoice2;
+    const handCardId = pending && !pending.revealed ? (pending.handCardId || null) : null;
     const result = engine.resolveChoice2(r, playerId, chosenId);
     this.addLog(this.describeEvents(playerId, result.events));
     this.emitPrimaryEvent(playerId, result.events, result.captured, {
+      handCardId,
       flippedCardId: result.flippedCard ? result.flippedCard.id : null,
       chosenFloorId: chosenId,
+      chosenFor: 'deck',
     });
     return this.afterAction(playerId, result);
   }
@@ -464,12 +484,31 @@ class Room {
     };
     if (!r) return { ...base, round: null };
 
+    // 덱에서 뒤집은 카드가 바닥 2장과 맞아 선택을 기다리는 동안(pendingChoice2), 엔진 상태에서는
+    // 방금 낸 손패와 그 짝이 이미 바닥에서 빠져 "대기 중인 캡처"로, 뒤집은 카드는 대기 상태
+    // 안에만 들어가 있어서 화면 어디에도 없었다 - 손패가 손에서 사라졌다가 선택 후 먹은패에
+    // 불쑥 나타나고, 뒤집은 카드는 고르는 내내 안 보였다. 실제 고스톱에서는 이 순간 손패가
+    // 짝 위에 올라가 있고 뒤집은 카드도 바닥에 펼쳐져 있으므로, 화면용 바닥에만 그 카드들을
+    // 그대로 보여준다(서버 상태 자체는 건드리지 않는 순수 표시용).
+    let floor = r.floor;
+    const pc = r.pendingChoice2;
+    if (pc) {
+      const seen = new Set(floor.map((c) => c.id));
+      const extra = [];
+      for (const group of pc.captured) {
+        for (const c of group.cards) if (!seen.has(c.id)) { seen.add(c.id); extra.push(c); }
+      }
+      if (pc.flippedCard && !seen.has(pc.flippedCard.id)) extra.push(pc.flippedCard);
+      floor = [...floor, ...extra];
+    }
+
     return {
       ...base,
       round: {
         phase: r.phase,
         deckCount: r.deck.length,
-        floor: r.floor,
+        floor,
+        choicePending: Boolean(pc),
         turnOrder: r.turnOrder,
         currentActor: r.turnOrder[r.turnIndex % r.turnOrder.length],
         pendingGoStop: r.pendingGoStop,

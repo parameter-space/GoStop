@@ -887,52 +887,78 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     // 월을 구한다.
     const bombMonth = Array.isArray(evt.handCardIds) && evt.handCardIds.length > 0
       ? cardMonth(evt.handCardIds[0]) : null;
-    // 손패로 낸 카드/덱에서 뒤집은 카드가 각각 "바닥의 어느 지점에서 맞춰졌는지" -
-    // 캡처되어 먹은패로 들어가는(=primaryMover가 아닌 willCapture) 카드들 중 월이 같은
-    // 카드의 예전(이번 렌더 전) 바닥 위치를 그 "맞춰지는 지점"으로 쓴다.
-    let handViaRect = null;
-    let deckViaRect = null;
-    let bombViaRect = null;
+    // 손패로 낸 카드/덱에서 뒤집은 카드가 각각 "바닥의 어느 카드와 맞춰졌는지" - 이번
+    // 렌더에 먹은패로 들어간 카드 중 직전 렌더까지 바닥에 있던 카드(=진짜 짝 후보)를 월별로
+    // 모아둔다. id는 월로 시작하니 월만 보면 "예전 턴에 이미 먹어서 먹은패에 쭉 있던 같은 월
+    // 카드"까지 잡히므로, 직전 바닥에 있었는지(oldFloorIds)를 꼭 같이 본다.
+    const partnersByMonth = new Map();
     if (captureKinds.includes(evt.kind)) {
       document.querySelectorAll('.card[data-id]').forEach((partnerElm) => {
         const pid = partnerElm.dataset.id;
         if (isPrimaryMover(pid) || !partnerElm.closest('.cap-cards')) return;
-        // id는 월(月)로 시작하다 보니, 월만 보고 짝을 찾으면 "이미 예전 턴에 먹어서 먹은패에
-        // 쭉 있던 같은 월의 다른 카드"(예: 광)를 잘못 짚어버릴 수 있다. 방금 전까지 바닥에
-        // 있다가 "이번 렌더"에 먹은패로 들어간 카드만 진짜 짝이므로, 예전(직전 렌더) 바닥에
-        // 있었는지까지 확인한다.
         if (!oldFloorIds || !oldFloorIds.has(pid)) return;
         const m = cardMonth(pid);
         if (m == null) return;
-        // 바닥에 같은 월 카드가 2장 있어서 직접 골라야 했던 경우(NEED_CHOICE2)는 그 두 후보가
-        // 월까지 완전히 같으므로, 월만 봐서는 어느 쪽을 실제로 골랐는지 구분이 안 된다(그래서
-        // 가끔 고르지 않은 카드 쪽으로 애니메이션이 잘못 날아갔다 - "왼쪽에서 날아온다"는
-        // 증상의 정체가 이거였다). 서버가 실제로 고른 카드 id(evt.chosenFloorId)를 알려줄 때는
-        // 그 카드만 인정하고 같은 월의 다른 후보는 걸러낸다 - 단, **그 월에 한해서만**이다.
-        // 이걸 월 구분 없이 전체에 걸어버리면(예전 버그), 예를 들어 덱 뒤집기 쪽에서
-        // NEED_CHOICE2가 뜬 턴에는 chosenFloorId가 그 월(예: 6월)만 가리키는데, 손패가 딴
-        // 월(예: 12월)에서 이미 확정적으로 잡은 진짜 짝까지 "chosenFloorId랑 다르다"는
-        // 이유로 덩달아 걸러져 버려서, 방금 낸 손패 카드가 아예 바닥을 들르지도 않고 곧장
-        // 먹은패로 순간이동해버렸다("엔티티 취급을 못 받는다"던 증상이 바로 이거였다).
-        if (evt.chosenFloorId && m === cardMonth(evt.chosenFloorId) && pid !== evt.chosenFloorId) return;
-        const oldPos = oldRects.get(pid);
-        if (!oldPos) return;
-        if (m === handCardMonth && !handViaRect) handViaRect = oldPos;
-        if (m === flippedCardMonth && !deckViaRect) deckViaRect = oldPos;
-        if (m === bombMonth && !bombViaRect) bombViaRect = oldPos;
+        const rect = oldRects.get(pid);
+        if (!rect) return;
+        if (!partnersByMonth.has(m)) partnersByMonth.set(m, []);
+        partnersByMonth.get(m).push({ pid, rect });
       });
     }
-    // "쪽"(무매치로 낸 손패를, 곧이어 뒤집은 덱 카드가 맞추는 경우)은 짝이 "바닥에 이미
-    // 있던 카드"가 아니라 "손패 카드 자기 자신"이라서, 위 루프의 handViaRect가 절대 못
-    // 찾는다(handViaRect는 바닥에 있던 후보만 본다) - 그러면 손패 카드는 만날 곳도 없이
-    // 그냥 바로 최종 위치로 직행해버리고, 덱 카드도 자기 페이즈 시각에 따로 도착해서 두
-    // 카드가 전혀 안 맞물려 보인다("여전히 따로 움직인다"던 증상 중 하나가 이거였다).
-    // 손패가 잡을 바닥 짝이 없는데(handViaRect 없음) 덱이 뒤집은 카드와 월이 같다면
-    // 바로 이 "쪽" 상황이므로, 손패도 덱과 같은 시각에 도착하도록 맞춘다(경유 지점 없이
-    // 도착 시각만 맞춤 - 어차피 만날 실제 바닥 카드가 없으므로).
-    const isJjokPair = hasHandPhase && hasDeckPhase && !handViaRect
-      && cardMonth(evt.handCardId) != null
-      && cardMonth(evt.handCardId) === cardMonth(evt.flippedCardId);
+    // 같은 월 후보 중 이 카드가 실제로 때린 짝을 고른다.
+    // - 서버가 알려준 선택(chosenFloorId)이 이 카드의 선택이면(chosenFor) 그 카드. 월만 같은
+    //   두 후보 중 고르지 않은 쪽으로 날아가던 예전 증상("왼쪽에서 날아온다") 방지.
+    // - 따닥(바닥 같은 월 2장 + 손패 + 덱)은 손패가 고른 짝(A)과 덱이 맞춘 짝(B)이 서로
+    //   다른 카드다 - 예전엔 둘 다 같은 한 장(A)으로 날아가서 덱 카드가 엉뚱한 자리를
+    //   때렸다. 이미 다른 카드가 차지한 짝(excludeId)은 건너뛴다.
+    // - 뻑 해소처럼 짝이 3장 묶음이면 그 무더기 맨 끝(가장 오른쪽) 카드 위에 얹는다.
+    function pickPartner(month, chosenIsMine, excludeId) {
+      if (month == null) return null;
+      const list = (partnersByMonth.get(month) || []).filter((p) => p.pid !== excludeId);
+      if (!list.length) return null;
+      if (chosenIsMine && evt.chosenFloorId) {
+        const chosen = list.find((p) => p.pid === evt.chosenFloorId);
+        if (chosen) return chosen;
+      }
+      if (list.length >= 3) return list.reduce((a, b) => (b.rect.left > a.rect.left ? b : a));
+      return list[0];
+    }
+    const handPartner = pickPartner(handCardMonth, evt.chosenFor === 'hand', null);
+    const deckPartner = pickPartner(flippedCardMonth, evt.chosenFor === 'deck', handPartner && handPartner.pid);
+    const bombPartner = pickPartner(bombMonth, false, null);
+
+    // 짝을 "때리는" 카드는 짝과 완전히 같은 자리가 아니라 살짝 비껴서(실제로 카드를 짝 위에
+    // 겹쳐 내려놓듯) 내려앉는다 - 정확히 같은 자리에 포개면 짝이 통째로 가려져서 "방금 무엇과
+    // 맞았는지"가 안 보이고, 짝이 사라지고 내 카드만 남은 것처럼 보였다.
+    const HIT_DX = 26;
+    const HIT_DY = -12;
+    function offsetRect(rect, ox, oy) {
+      return rect ? { left: rect.left + ox, top: rect.top + oy } : null;
+    }
+
+    // "쪽": 손패가 짝 없이 바닥에 내려앉고, 이어서 뒤집은 덱 카드가 바로 그 손패를 맞춰
+    // 둘 다 가져가는 경우. 실제로는 손패가 먼저 바닥 빈자리에 "탁" 놓이고, 덱 카드가 그 위를
+    // 때린 뒤 둘이 같이 쓸려가야 한다. 그런데 서버 상태는 손패가 바닥을 거친 적 없이 곧장
+    // 먹은패로 들어가 있어서, 예전엔 손패가 **손에 1초 가까이 그대로 붙어 있다가** 바닥을
+    // 한 번도 안 들르고 먹은패로 곧장 날아갔다("카드를 낸 순간 엔티티 취급을 못 받는다"는
+    // 증상). 손패가 내려앉을 바닥 빈자리(마지막 줄 끝 - 가운데 정렬이라 양 옆이 비어 있다)를
+    // 계산해서, 손패는 거기로, 덱 카드는 그 손패 위로 날아가게 한다.
+    // (handCaptures 조건이 꼭 필요하다 - 뻑 형성(손패+덱이 같은 월이지만 캡처가 아님)까지
+    // 이걸로 오인하면, 예전처럼 손패가 손에서 한참 늦게 출발하는 문제가 뻑에서도 생긴다.)
+    function floorFreeSpot() {
+      const floorEl = el('floor');
+      const fr = floorEl ? floorEl.getBoundingClientRect() : null;
+      const rects = [];
+      if (oldFloorIds) oldFloorIds.forEach((pid) => { const r = oldRects.get(pid); if (r) rects.push(r); });
+      if (!rects.length) return fr ? { left: fr.left + fr.width / 2 - 39, top: fr.top + 16 } : null;
+      const w = rects[0].width || 78;
+      const lastTop = Math.max(...rects.map((r) => r.top));
+      const row = rects.filter((r) => Math.abs(r.top - lastTop) < 20);
+      const right = Math.max(...row.map((r) => r.left + (r.width || w)));
+      if (!fr || right + 12 + w <= fr.right - 8) return { left: right + 12, top: lastTop };
+      const left = Math.min(...row.map((r) => r.left));
+      return { left: left - 12 - w, top: lastTop };
+    }
     // 손패/덱 카드 각각이 "실제로 이번 턴에 캡처됐는지"를, handViaRect/deckViaRect(바닥
     // 경유지를 찾았는지) 같은 간접적인 신호 대신 있는 그대로 확인한다 - willCapture가
     // "이 카드의 새 위치가 먹은패 더미 안인지"를 직접 보므로, 따닥(손패/덱 둘 다 같은 월이라
@@ -950,6 +976,9 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     const deckCardElm = deckCardId && document.querySelector(`.card[data-id="${deckCardId}"]`);
     const handCaptures = isBomb || Boolean(handCardElm && willCapture(handCardElm));
     const deckCaptures = Boolean(deckCardElm && willCapture(deckCardElm));
+    const isJjok = hasHandPhase && hasDeckPhase && handCaptures && !handPartner
+      && handCardMonth != null && handCardMonth === flippedCardMonth;
+    const jjokSpot = isJjok ? floorFreeSpot() : null;
     // "손패를 낸다(짝이 있으면 탁) -> 덱을 뒤집는다(짝이 있으면 또 탁) -> 그제서야 이번
     // 턴에 맞춰진 카드들이 전부 한꺼번에 내 먹은패로 쓸려 들어간다"는 순서를 지키기 위해,
     // 실제로 캡처가 걸린 페이즈들 중 가장 늦게 "탁" 하는 시점(+HOLD)을 전역 스윕 시작
@@ -958,7 +987,11 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     // 폭탄이면 손패 페이즈 자체가 3장 시차(70ms씩)만큼 더 길어지기 때문이다(PHASE1_DUR만
     // 쓰면 마지막 폭탄 카드가 아직 도착도 안 했는데 스윕이 시작되는 어긋남이 생긴다).
     const handHitTime = handPhaseDur;
-    const deckHitTime = deckPhaseStart + approachDurFor('deck');
+    // 덱 카드가 이미 화면에 있던 경우(바닥 2장 중 고르는 동안 바닥에 펼쳐져 있던 카드를,
+    // 선택 후 고른 짝 위로 옮기는 마무리 단계)는 덱에서 새로 뒤집혀 나오는 게 아니라 바닥에서
+    // 한 번 더 옮기는 것이라 비행 시간도 그 스타일('move')을 따른다.
+    const deckStyleForHit = deckCardId && oldRects.has(deckCardId) ? 'move' : 'deck';
+    const deckHitTime = deckPhaseStart + approachDurFor(deckStyleForHit);
     const globalSweepStart = HOLD + Math.max(
       handCaptures ? handHitTime : 0,
       deckCaptures ? deckHitTime : 0,
@@ -1075,12 +1108,7 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
       if (style === 'deck') delay = deckPhaseStart;
       else if (bombIndex > 0) delay = bombIndex * 70;
       else if (isSweptCapture) delay = globalSweepStart;
-      else if (primary && id === evt.handCardId && isJjokPair) {
-        // "쪽": 이 손패 카드는 만날 바닥 짝이 없어서(=경유 지점이 없어서) 그냥 즉시
-        // 출발하면 덱 카드보다 훨씬 먼저 도착해버린다 - 도착 시각이 덱 카드와 같아지도록
-        // (경유 없이 곧장 최종 위치로) 출발을 늦춘다.
-        delay = Math.max(0, deckHitTime - approachDurFor(style));
-      } else delay = 0;
+      else delay = 0;
 
       // 손패로 낸 카드/덱에서 뒤집은 카드가 실제로 캡처된다면(=바닥에 짝이 있었다면),
       // 곧바로 내 먹은패로 직행하지 않는다: 먼저 "공용 필드"의 그 짝이 있던 자리까지
@@ -1095,9 +1123,18 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
       // 카드 3장이 바닥 짝을 기다리지도 않고 각자 도착 즉시(약 520~660ms) 먹은패로 곧장
       // 가버렸고, 그 뒤 한참(최대 630ms 이상) 지나서야 바닥 짝 혼자 뒤늦게 날아 들어오는
       // 것처럼 보였다("따로따로 움직이고 뒤늦게 날아온다"는 증상이 폭탄에서도 똑같이 났다).
-      const viaRect = bombIndex >= 0
-        ? bombViaRect
-        : (primary ? (style === 'deck' ? deckViaRect : (id === evt.handCardId ? handViaRect : null)) : null);
+      // 어느 카드가 손패/덱 카드인지는 스타일('deck' 등)이 아니라 id로 판정한다 - 바닥 2장 중
+      // 고르는 동안 이미 바닥에 펼쳐져 있던 덱 카드는 이전 위치가 있어 스타일이 'move'라서,
+      // 스타일로 보면 덱 카드인 줄 몰라 고른 짝을 들르지 않고 먹은패로 혼자 먼저 가버렸다.
+      let viaRect = null;
+      if (bombIndex >= 0) {
+        viaRect = bombPartner ? offsetRect(bombPartner.rect, 16 * (bombIndex + 1), -8 * (bombIndex + 1)) : null;
+      } else if (primary && id === evt.handCardId) {
+        viaRect = isJjok ? jjokSpot : (handPartner ? offsetRect(handPartner.rect, HIT_DX, HIT_DY) : null);
+      } else if (primary && id === deckCardId) {
+        viaRect = isJjok ? offsetRect(jjokSpot, HIT_DX, HIT_DY)
+          : (deckPartner ? offsetRect(deckPartner.rect, HIT_DX, HIT_DY) : null);
+      }
 
       let anim;
       if (viaRect) {
@@ -1671,6 +1708,10 @@ function renderGame(state) {
   el('deck-count').textContent = `덱 ${round.deckCount}장 남음`;
   const isMyTurn = round.currentActor === myId && round.phase === 'playing';
   el('turn-indicator').textContent = isMyTurn ? '내 차례!' : `${state.players.find((p) => p.id === round.currentActor)?.name || ''}님 차례`;
+  // 덱에서 뒤집은 카드의 짝을 고르는 중(choicePending)에는 서버가 다른 행동을 전부 거부한다.
+  // 이때 바닥에는 표시용으로 뒤집은 카드와 대기 중인 짝이 올라와 있어서, 그걸 보고 폭탄 버튼이
+  // 떴다가 누르면 거부당하는 식의 헷갈리는 상황이 생기므로 행동 입력 자체를 막아둔다.
+  const canAct = isMyTurn && !round.choicePending;
 
   // 바닥에 같은 월 카드가 여러 장 있으면(뻑 더미 등) 살짝 겹쳐서 한 무더기처럼 보이게 묶는다
   const floorDiv = el('floor');
@@ -1684,7 +1725,7 @@ function renderGame(state) {
     const group = document.createElement('div');
     group.className = 'floor-group';
     floorByMonth.get(month).forEach((c, i) => {
-      const onClick = isMyTurn && selectedHandCardId ? () => tryPlay(selectedHandCardId, c.id) : null;
+      const onClick = canAct && selectedHandCardId ? () => tryPlay(selectedHandCardId, c.id) : null;
       const cel = cardEl(c, { onClick });
       if (i > 0) cel.style.marginLeft = '-46px';
       group.appendChild(cel);
@@ -1712,7 +1753,7 @@ function renderGame(state) {
     const div = cardEl(c, {
       selected: c.id === selectedHandCardId,
       onClick: () => {
-        if (!isMyTurn || hasSkipDebt) return;
+        if (!canAct || hasSkipDebt) return;
         if (c.type === 'bonus') { playBonus(c.id); return; }
         selectedHandCardId = c.id;
         tryPlay(c.id);
@@ -1729,12 +1770,12 @@ function renderGame(state) {
   const bombable = Object.entries(monthCounts).filter(([m, n]) => n === 3 &&
     round.floor.filter((c) => c.month === Number(m)).length === 1);
 
-  if (isMyTurn && shakeable.length) show('btn-shake'); else hide('btn-shake');
-  if (isMyTurn && bombable.length) show('btn-bomb'); else hide('btn-bomb');
+  if (canAct && shakeable.length) show('btn-shake'); else hide('btn-shake');
+  if (canAct && bombable.length) show('btn-bomb'); else hide('btn-bomb');
 
   // 폭탄 직후 스킵 턴(손패가 완전히 비었든, 카드가 더 남아있든 상관없이 서버가 손패 내기
   // 자체를 받지 않음)에는 전용 버튼으로만 "덱만 뒤집기"를 진행할 수 있게 한다.
-  const needsSkipHandButton = isMyTurn && hasSkipDebt;
+  const needsSkipHandButton = canAct && hasSkipDebt;
   if (needsSkipHandButton) show('btn-skip-hand'); else hide('btn-skip-hand');
   el('btn-shake').onclick = () => openMonthModal('modal-shake', 'shake-options',
     shakeable.map(([m]) => monthSampleCard(round.myHand, Number(m))), (month) => {
@@ -1818,23 +1859,30 @@ function piValueOf(piCards) {
   return piCards.reduce((s, c) => s + (c.piValue || 1), 0);
 }
 
+// 덱에서 뒤집은 카드가 바닥 2장과 맞을 때, 서버는 "손패가 바닥에 내려앉고 덱 카드가 뒤집혀
+// 나오는" 중간 장면을 먼저 보내고 곧바로 선택을 요구한다. 선택 창을 바로 띄우면 그 창이 방금
+// 뒤집힌 카드를 가려서 무엇이 나왔는지 보지도 못한 채 고르게 된다 - 실제로는 뒤집은 패를 보고
+// 나서 고르므로, 덱 카드가 바닥에 내려앉을 만큼(덱 페이즈 시작 840ms + 비행 700ms) 기다린다.
+const REVEAL_BEFORE_CHOICE_MS = 1600;
+
+function handlePlayResponse(cardId, res) {
+  if (res.ok) {
+    selectedHandCardId = null;
+    hideModal('modal-choice');
+    return;
+  }
+  if (res.needChoice) {
+    openChoiceModal(res.matches, (chosenId) => tryPlay(cardId, chosenId));
+  } else if (res.needChoice2) {
+    setTimeout(() => openChoiceModal(res.matches, (chosenId) => resolveChoice2(chosenId)), REVEAL_BEFORE_CHOICE_MS);
+  } else {
+    alert(res.error);
+    selectedHandCardId = null;
+  }
+}
+
 function tryPlay(cardId, chosenFloorId) {
-  socket.emit('game:playCard', { cardId, chosenFloorId }, (res) => {
-    if (res.ok) {
-      selectedHandCardId = null;
-      hideModal('modal-choice');
-      return;
-    }
-    if (res.needChoice) {
-      openChoiceModal(res.matches, (chosenId) => tryPlay(cardId, chosenId));
-    } else if (res.needChoice2) {
-      // 덱에서 뒤집은 카드가 바닥의 같은 월 2장과 매치되는 드문 경우: 어느 쪽과 짝지을지 선택
-      openChoiceModal(res.matches, (chosenId) => resolveChoice2(chosenId));
-    } else {
-      alert(res.error);
-      selectedHandCardId = null;
-    }
-  });
+  socket.emit('game:playCard', { cardId, chosenFloorId }, (res) => handlePlayResponse(cardId, res));
 }
 
 function resolveChoice2(chosenId) {
@@ -1880,8 +1928,10 @@ function openMonthModal(modalId, optionsId, cards, onPick) {
 
 el('btn-skip-hand').addEventListener('click', () => {
   // 스킵 턴 전용: 실제로 낼 손패가 없으므로 cardId 없이 보낸다(서버도 이 상태에서는
-  // cardId를 쓰지 않고 덱만 뒤집는다).
-  socket.emit('game:playCard', { cardId: null }, (res) => { if (!res.ok) alert(res.error); });
+  // cardId를 쓰지 않고 덱만 뒤집는다). 덱만 뒤집는 턴에도 뒤집은 카드가 바닥 2장과 맞으면
+  // 선택을 요구받는데, 예전엔 그 응답을 에러로만 처리해서 "undefined" 알림만 뜨고 선택 창이
+  // 안 열려, 서버는 선택을 기다리는데 선택할 방법이 없어 판 전체가 멈춰버렸다.
+  socket.emit('game:playCard', { cardId: null }, (res) => handlePlayResponse(null, res));
 });
 
 el('shake-cancel').addEventListener('click', () => hideModal('modal-shake'));

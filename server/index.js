@@ -115,15 +115,15 @@ function performAutoPlay(room, playerId) {
 
   const hand = r.hand[playerId];
   room.addLog(`${room.playerName(playerId)}님이 응답이 없어 자동으로 진행되었습니다.`);
-  if (hand.length === 0) {
-    room.playCard(playerId, null); // 스킵 턴(폭탄 이후 덱만 뒤집기)
-    return;
-  }
+  // 손패가 없으면 스킵 턴(폭탄 이후 덱만 뒤집기). 이 경우에도 뒤집은 카드가 바닥 2장과 맞아
+  // 선택을 요구받을 수 있어서, 손패가 있을 때와 똑같이 아래 catch를 거치게 한다(예전엔 이
+  // 경로만 try 밖에 있어서 "자동 진행 실패"로 한 바퀴(30초) 더 기다린 뒤에야 풀렸다).
+  const cardId = hand.length ? hand[0].id : null;
   try {
-    room.playCard(playerId, hand[0].id);
+    room.playCard(playerId, cardId);
   } catch (e) {
     if (e && e.code === 'NEED_CHOICE') {
-      room.playCard(playerId, hand[0].id, e.matches[0].id);
+      room.playCard(playerId, cardId, e.matches[0].id);
     } else if (e && e.code === 'NEED_CHOICE2') {
       room.resolveChoice2(playerId, e.matches[0].id);
     } else {
@@ -264,7 +264,14 @@ io.on('connection', (socket) => {
         // (여기까지 오면서 이미 일부 상태가 바뀌었으므로 다른 클라이언트에게도 반영해둔다)
         // 선택이 끝나기 전이라도, 구경하는 다른 플레이어들은 카드가 덱에서 뒤집혀
         // 나오는 애니메이션을 바로 볼 수 있도록 미리 이벤트를 하나 남겨둔다.
-        ctx.room.pushEvent('deck_reveal', ctx.playerId, { flippedCardId: e.flippedCardId || null });
+        // handCardId도 같이 넘겨야 손패가 "손에서 바닥으로 내려앉는" 장면이 그려진다(없으면
+        // 이 카드가 이번 턴의 행위자인지 몰라 그냥 자리만 옮긴 카드 취급을 받는다).
+        ctx.room.pushEvent('deck_reveal', ctx.playerId, {
+          handCardId: e.handCardId || null, flippedCardId: e.flippedCardId || null,
+        });
+        // 이 중간 장면이 실제로 화면에 나갔음을 기록 - 선택 후 마무리(resolveChoice2)는 이걸 보고
+        // 손패를 "이미 바닥에 있던 카드"로 쓸어갈지, "손에서 곧장 나오는 카드"로 그릴지 정한다.
+        if (ctx.room.round && ctx.room.round.pendingChoice2) ctx.room.round.pendingChoice2.revealed = true;
         broadcast(ctx.room);
         cb?.({ ok: false, needChoice2: true, matches: e.matches });
       } else {
