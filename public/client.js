@@ -401,14 +401,8 @@ function restartAnimClass(elm, className) {
   elm.classList.add(className);
 }
 
-// 카드가 착지하는 순간 한 번 과장되게 찌그러지는 "찰진" 타격 임팩트.
-function slamCard(elm) {
-  if (prefersReducedMotion()) return;
-  restartAnimClass(elm, 'slam');
-}
-
 // 착지 순간 카드 자체가 아주 짧게 확 밝아졌다 돌아오는 "히트 플래시" - 액션 게임에서 타격을
-// 읽기 쉽게 만드는 가장 확실한 기법 중 하나다. transform 애니메이션(slam)만으로는 눈에 잘 안
+// 읽기 쉽게 만드는 가장 확실한 기법 중 하나다. 카드가 살짝 눌리는 정도(keyframe)만으로는 눈에 잘 안
 // 띄어도, 밝기가 확 튀는 프레임 한두 개는 누구 눈에도 분명히 들어온다.
 function hitFlash(elm) {
   if (prefersReducedMotion()) return;
@@ -624,12 +618,15 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
   // 전부 이 값을 정확히 공유해야 하는데(하나라도 어긋나면 keyframe 경계가 안 맞아 버벅이는
   // 것처럼 보인다). "카드가 너무 빨리 날아가고 쫀득함이 없다"는 피드백을 받아 다시
   // 올렸다(620/450 -> 700/520) - 대기 시간(HOLD/PHASE_GAP)과 이동 속도는 다른 축이라,
-  // 대기 시간은 그대로 두고 이동 자체만 더 느긋하게 만든다. 오버슈트/정착 바운스
+  // 대기 시간은 그대로 두고 이동 자체만 더 느긋하게 만든다. 착지 눌림/정착
   // (buildApproachKeyframes, flyCard/flyCardViaMeeting)와 함께 봐야 "쫀득함"이 완성된다.
   // 이후 "여전히 느리다"는 피드백으로 다시 조금 당겼다(700/520 -> 600/460). 느리게 보이던 큰
   // 원인은 flyCardViaMeeting이 접근 모양을 대기 시간까지 늘려 붙이던 버그였고, 그걸 고친 뒤라
-  // 이 정도만 당겨도 쫀득함(오버슈트/히트스톱)은 그대로 남는다.
-  function approachDurFor(style) { return style === 'deck' ? 600 : 460; }
+  // 이 정도만 당겨도 쫀득함은 그대로 남는다.
+  // 그 뒤 비행 곡선을 "offset = 실제 시각"으로 다시 짜면서(buildApproachKeyframes) 카드가 닿는
+  // 순간이 확실해졌기 때문에, 길이 자체는 조금 더 줄였다(600/460 -> 560/440). 닿는 순간은 덱
+  // 448ms, 손 343ms이고 그 뒤는 눌렸다 돌아오는 정착이다.
+  function approachDurFor(style) { return style === 'deck' ? 560 : 440; }
 
   // 마지막(가장 늦은) 페이즈의 카드가 부딪힌 뒤에도, 전역 스윕이 시작되기까지 아주 잠깐
   // 더 멈춰 있는 여유(격투 게임의 히트스톱과 비슷한 "타격의 무게감"을 위한 짧은 정지).
@@ -638,46 +635,56 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
   // 도착해 시퀀스를 끊어버릴 여지도 줄어든다(빠르게 연달아 턴이 진행될 때 특히).
   const HOLD = 110;
 
-  // style별 "던지기/뒤집기" 모양의 keyframe들을 만든다. endDx/endDy는 이 모양이 도착하는
-  // 지점(기본 0,0=진짜 최종 위치, 캡처면 "바닥에서 맞춰지는 지점")이고, offsetScale은 이
-  // 모양 전체가 차지할 시간 구간의 길이를 전체 애니메이션 대비 비율로 준다(예: 0.4면
-  // 전체의 40% 동안 이 모양이 재생됨). 반환값은 { keyframes, easing }.
-  function buildApproachKeyframes(style, dx, dy, endDx = 0, endDy = 0, offsetScale = 1) {
-    const s = offsetScale;
+  // 모든 비행 keyframe은 같은 transform 함수 목록을 쓴다 - 목록이 keyframe마다 다르면
+  // 브라우저가 행렬 보간으로 바꿔버려서 회전/확대가 엉뚱하게 섞인다. 마지막 scale(sx, sy)는
+  // 착지 순간 살짝 눌리는 찌그러짐 전용이고, 앞의 scale(s)는 크기(미니 더미 보정 포함)다.
+  function tf(x, y, s = 1, rotY = 0, rot = 0, sx = 1, sy = 1) {
+    return `translate(${x}px, ${y}px) scale(${s}) rotateY(${rotY}deg) rotate(${rot}deg) scale(${sx}, ${sy})`;
+  }
+
+  // style별 "던지기/뒤집기" 모양의 keyframe들을 만든다. endDx/endDy는 이 모양이 내려앉는
+  // 지점(기본 0,0=진짜 최종 위치, 캡처면 "바닥에서 맞춰지는 지점")이다. 반환값은
+  // { keyframes, hitAt } - hitAt은 카드가 바닥/짝에 "탁" 닿는 순간(전체 길이 대비 비율)이다.
+  //
+  // 예전엔 keyframe offset을 정해두고 그 위에 애니메이션 전체 easing(강한 ease-out 곡선)을
+  // 한 번 더 걸었는데, 그러면 offset이 실제 시간과 전혀 안 맞는다: 덱 카드(600ms)는 뒤집기가
+  // 58ms 만에 끝나고 173ms에 이미 도착해서, 남은 330ms 동안 마지막 몇 %를 기어가다가
+  // 600ms(onfinish)에야 타격음과 찌그러짐이 났다 - 눈으로는 이미 닿았는데 소리가 0.3~0.4초
+  // 늦게 나고, 끝에서는 착지 후 한참 뒤에 1.46배로 찌그러져 "과하게 커지는" 것처럼 보였다.
+  // 이제 애니메이션 전체는 linear로 두고 구간마다 easing을 따로 준다 - offset이 곧 실제 시각이다.
+  //   ① 들어올리기(덱: 더미 위에서 뒤집기) - 감속
+  //   ② 내리치기 - 가속(ease-in)해서 hitAt에 정확히 닿음
+  //   ③ 닿은 자리에서 살짝 눌렸다가(1.04 x 0.95) 원래대로
+  // 공중에 떠 있는 동안만 아주 조금(1.05배) 커진다 - 들어올려 눈에 가까워진 만큼이고, 닿으면서
+  // 1배로 돌아오는 게 "내려친다"는 느낌을 준다.
+  const LIFT_EASE = 'cubic-bezier(.25,.7,.4,1)';
+  const SLAP_EASE = 'cubic-bezier(.55,0,.9,.55)';
+  function buildApproachKeyframes(style, dx, dy, endDx = 0, endDy = 0) {
+    const hitAt = style === 'deck' ? 0.8 : 0.78;
+    const squashAt = hitAt + 0.08;
+    let lifted;
+    let start;
     if (style === 'deck') {
-      return {
-        easing: 'cubic-bezier(.18,.85,.3,1)',
-        keyframes: [
-          { offset: 0, transform: `translate(${dx}px, ${dy}px) scale(0.55) rotateY(180deg)` },
-          { offset: s * 0.4, transform: `translate(${mix(dx, endDx, 0.12)}px, ${mix(dy, endDy, 0.12) - 16}px) scale(0.86) rotateY(0deg)` },
-          { offset: s * 0.48, transform: `translate(${mix(dx, endDx, 0.12)}px, ${mix(dy, endDy, 0.12) - 16}px) scale(0.86) rotateY(0deg)` },
-          // 오버슈트는 작게: 덱 카드는 더미(가운데)에서 바로 옆 바닥으로 내려앉는 거라, 손패처럼
-          // 크게(1.12) 부풀면 perspective 아래에서 화면 앞으로 툭 튀어나온 것처럼 보였다.
-          { offset: s * 0.8, transform: `translate(${mix(dx, endDx, 1.03)}px, ${mix(dy, endDy, 1.03)}px) scale(1.04) rotateY(0deg)` },
-          { offset: s, transform: `translate(${endDx}px, ${endDy}px) scale(1) rotateY(0deg)` },
-        ],
-      };
-    }
-    if (style === 'hand') {
-      const rot = dx > 0 ? -22 : 22;
-      return {
-        easing: 'cubic-bezier(.22,.85,.3,1)',
-        keyframes: [
-          { offset: 0, transform: `translate(${mix(dx, endDx, 0.1)}px, ${mix(dy, endDy, 0.1) + 8}px) scale(0.5) rotate(${rot * 0.5}deg)` },
-          { offset: s * 0.12, transform: `translate(${dx}px, ${dy}px) scale(0.46) rotate(${rot}deg)` },
-          { offset: s * 0.58, transform: `translate(${mix(dx, endDx, 0.6)}px, ${mix(dy, endDy, 0.6) - 50}px) scale(0.88) rotate(${rot * 0.3}deg)` },
-          { offset: s * 0.78, transform: `translate(${mix(dx, endDx, 1.05)}px, ${mix(dy, endDy, 1.05)}px) scale(1.11) rotate(${rot * -0.05}deg)` },
-          { offset: s, transform: `translate(${endDx}px, ${endDy}px) scale(1) rotate(0deg)` },
-        ],
-      };
+      // 더미(작게 그려진 뒷면) 위에서 뒤집으며 들어올린다. 0.55배는 더미 카드 크기에 맞춘 것.
+      start = { offset: 0, transform: tf(dx, dy, 0.55, 180, 0), easing: LIFT_EASE };
+      lifted = { offset: 0.34, transform: tf(mix(dx, endDx, 0.12), mix(dy, endDy, 0.12) - 18, 1.05, 0, 0), easing: SLAP_EASE };
+    } else {
+      const rot = dx > 0 ? -5 : 5;
+      // 'hand': 상대가 손패 줄에서 꺼내 내는 카드(뒷면으로 들고 있던 걸 뒤집으며 낸다).
+      // 'move': 내 손패처럼 이미 앞면으로 제자리에 있던 카드를 들어 내리친다.
+      start = style === 'hand'
+        ? { offset: 0, transform: tf(dx, dy, 0.6, 180, rot * 2), easing: LIFT_EASE }
+        : { offset: 0, transform: tf(dx, dy, 1, 0, 0), easing: LIFT_EASE };
+      lifted = { offset: 0.3, transform: tf(mix(dx, endDx, 0.35), mix(dy, endDy, 0.35) - 26, 1.05, 0, rot), easing: SLAP_EASE };
     }
     return {
-      easing: 'cubic-bezier(.2,.85,.3,1)',
+      hitAt,
       keyframes: [
-        { offset: 0, transform: `translate(${dx}px, ${dy}px) scale(0.94) rotate(-4deg)` },
-        { offset: s * 0.5, transform: `translate(${mix(dx, endDx, 0.5)}px, ${mix(dy, endDy, 0.5) - 18}px) scale(0.98) rotate(-2deg)` },
-        { offset: s * 0.78, transform: `translate(${mix(dx, endDx, 1.05)}px, ${mix(dy, endDy, 1.05)}px) scale(1.09) rotate(2deg)` },
-        { offset: s, transform: `translate(${endDx}px, ${endDy}px) scale(1) rotate(0deg)` },
+        start,
+        lifted,
+        { offset: hitAt, transform: tf(endDx, endDy, 1, 0, 0), easing: 'ease-out' },
+        { offset: squashAt, transform: tf(endDx, endDy, 1, 0, 0, 1.04, 0.95), easing: 'ease-out' },
+        { offset: 1, transform: tf(endDx, endDy, 1, 0, 0) },
       ],
     };
   }
@@ -688,6 +695,7 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
   // 날아가고, 상대가 낸 손패도 처음부터 작은 크기로 바닥 짝을 때렸다. kAt(offset)은 그
   // 시점의 크기 배율(도착 크기 대비)이고, w/h는 도착 크기다. scale은 카드 중심 기준이라
   // 커진 만큼 translate를 반씩 보정해야 왼쪽 위 모서리가 원래 계산한 자리에 맞는다.
+  // (첫 번째 단일 인자 scale(s)만 곱한다 - 뒤의 scale(sx, sy)는 찌그러짐이라 그대로 둔다.)
   function resizeKeyframes(keyframes, kAt, w, h) {
     if (!w || !h) return keyframes;
     return keyframes.map((f) => {
@@ -695,7 +703,7 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
       if (!f.transform || Math.abs(k - 1) < 0.02) return f;
       let t = f.transform.replace(/translate\(([-\d.e]+)px, ([-\d.e]+)px\)/, (m, x, y) =>
         `translate(${Number(x) + ((k - 1) * w) / 2}px, ${Number(y) + ((k - 1) * h) / 2}px)`);
-      t = /scale\(/.test(t) ? t.replace(/scale\(([-\d.e]+)\)/, (m, s) => `scale(${Number(s) * k})`) : `${t} scale(${k})`;
+      t = /scale\([-\d.e]+\)/.test(t) ? t.replace(/scale\(([-\d.e]+)\)/, (m, s) => `scale(${Number(s) * k})`) : `${t} scale(${k})`;
       return { ...f, transform: t };
     });
   }
@@ -705,57 +713,50 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
   // 훨씬 굼뜨게 보이고 도착 직전에야 천천히 쪼그라드는 모양이 어색했다.
   const shrinkEarly = (a, b) => (o) => a + (b - a) * Math.min(1, o / 0.35);
 
-  // buildApproachKeyframes가 만든 "접근"(막 손/덱에서 튀어나오는 되감기 자세 포함) 뒤에,
-  // 착지 직전 정지 구간(히트스톱)과 살짝 눌렸다 튕기는 정착 한 번을 덧붙인다. 손/덱에서
-  // 처음 나와 곧장 최종 위치로 가는 "차가운(cold)" 비행(그냥 내기 등)에 쓴다.
+  // 손/덱에서 처음 나와 곧장 최종 위치로 가는 "차가운(cold)" 비행(그냥 내기 등). 접근 모양이
+  // 이미 닿기+눌림+정착까지 포함하므로 최종 위치(0,0)로 가는 접근 그 자체다.
   function buildFlightKeyframes(style, dx, dy) {
-    const { keyframes: baseFrames, easing } = buildApproachKeyframes(style, dx, dy);
-    const overshoot = baseFrames[baseFrames.length - 2];
-    const finalFrame = baseFrames[baseFrames.length - 1];
-    const holdOffset = Math.min(overshoot.offset + 0.1, 0.97);
-    const settleOffset = Math.min(holdOffset + 0.02, 0.99);
-    const keyframes = [
-      ...baseFrames.slice(0, -1),
-      { offset: holdOffset, transform: overshoot.transform },
-      { offset: settleOffset, transform: 'translate(0px, 0px) scale(0.95) rotate(0deg)' },
-      finalFrame,
-    ];
-    return { keyframes, easing };
+    return buildApproachKeyframes(style, dx, dy, 0, 0);
   }
 
-  // buildFlightKeyframes와 같은 착지 연출(히트스톱+정착)이지만, "막 손/덱에서 튀어나오는"
-  // 되감기 자세(scale(0.94)/rotate(-4deg) 시작)가 없다 - 이미 짝과 부딪혀서 한 번 멈췄다가
-  // 그 자리(scale 1/rotate 0)에서 그대로 이어서 먹은패로 쓸려 들어가는 마지막 구간(스윕)
-  // 전용이다. flyCardViaMeeting의 스윕 단계와, 경유지 없이 이 스윕과 정확히 같은 시각에
-  // 함께 쓸려 들어가는 바닥 짝(flyCard의 sweepStyle) 둘 다 이 모양을 쓴다 - 그래야 "부딪힌
-  // 뒤 가만히 있다가 함께 쓸려간다"는 이어지는 한 동작으로, 서로 정확히 같은 곡선으로
-  // 움직인다. 예전엔 flyCardViaMeeting의 스윕이 "접근+대기+스윕"을 하나로 이어붙인 단일
-  // easing 곡선의 일부였는데, 그러면 같은 시각에 독자적으로(새 애니메이션으로) 시작하는
-  // 바닥 짝의 flyCard(그 카드는 buildFlightKeyframes를 써서 되감기 자세부터 시작)와는
-  // 겉보기 타이밍은 같아도 그 순간의 속도 곡선(가속도)이 서로 달랐다 - "도착은 같은데
-  // 출발이 다르게 느껴진다"는 게 바로 이 증상이었다.
+  // 이미 짝과 부딪혀 멈춰 있던 카드들을 먹은패로 "쓸어 담는" 마지막 구간(스윕). 되감기
+  // 자세 없이 그 자리(scale 1)에서 바로 출발해 부드럽게 가속/감속하며 더미에 들어간다 -
+  // 도착 = 애니메이션 끝이라, onfinish의 캡처 반짝임이 들어오는 순간과 정확히 맞는다.
+  // flyCardViaMeeting의 스윕 단계와, 경유지 없이 함께 쓸려 들어가는 바닥 짝(flyCard의
+  // sweepStyle) 둘 다 이 모양을 써서 서로 정확히 같은 곡선으로 움직인다.
   function buildSweepKeyframes(dx, dy) {
     return {
-      easing: 'cubic-bezier(.2,.85,.3,1)',
       keyframes: [
-        { offset: 0, transform: `translate(${dx}px, ${dy}px) scale(1) rotate(0deg)` },
-        { offset: 0.5, transform: `translate(${mix(dx, 0, 0.5)}px, ${mix(dy, 0, 0.5) - 18}px) scale(0.98) rotate(-2deg)` },
-        { offset: 0.78, transform: `translate(${mix(dx, 0, 1.05)}px, ${mix(dy, 0, 1.05)}px) scale(1.09) rotate(2deg)` },
-        { offset: 0.88, transform: `translate(${mix(dx, 0, 1.05)}px, ${mix(dy, 0, 1.05)}px) scale(1.09) rotate(2deg)` },
-        { offset: 0.9, transform: 'translate(0px, 0px) scale(0.95) rotate(0deg)' },
-        { offset: 1, transform: 'translate(0px, 0px) scale(1) rotate(0deg)' },
+        { offset: 0, transform: tf(dx, dy, 1, 0, 0), easing: 'cubic-bezier(.45,0,.4,1)' },
+        { offset: 0.55, transform: tf(mix(dx, 0, 0.6), mix(dy, 0, 0.6) - 12, 1.03, 0, -2), easing: 'cubic-bezier(.3,0,.25,1)' },
+        { offset: 1, transform: tf(0, 0, 1, 0, 0) },
       ],
     };
   }
 
+  // 카드가 바닥/짝에 닿는 순간의 타격(충격링/밝기 플래시/타격음)을 그 시각에 예약한다.
+  // 애니메이션 객체와 무관한 JS 타이머라, 그 사이 이 카드가 cancelPriorAnim으로 다른
+  // 애니메이션에 넘어갔으면(세대 번호가 바뀜) 건너뛴다. 화면에서 빠진(detached) 카드도
+  // 건너뛴다 - 그 getBoundingClientRect()는 (0,0)이라 화면 구석에 유령 충격 링이 뜬다.
+  // 링 위치는 그 순간의 실제 화면 위치(transform 포함)라 카드가 닿은 바로 그 자리다.
+  // 애니메이션은 만든 순간이 아니라 다음 프레임에 실제로 시작하므로(start time 확정 =
+  // anim.ready), 그때의 진행 시각을 빼고 남은 만큼만 기다린다 - 안 그러면 소리가 최대 한
+  // 프레임 먼저 난다.
+  function scheduleHit(elm, gen, atMs, anim) {
+    const fire = () => {
+      if (elm.dataset.flightGen !== String(gen) || !elm.isConnected) return;
+      spawnImpactRing(elm);
+      hitFlash(elm);
+      cardSlap();
+    };
+    const arm = () => setTimeout(fire, Math.max(0, atMs - ((anim && anim.currentTime) || 0)));
+    if (anim && anim.ready) anim.ready.then(arm, () => {}); else arm();
+  }
+
   // 손패에서 낸/덱에서 뒤집은/이미 바닥에 있던 카드가 자기 최종 위치(먹은패 더미 또는
-  // 바닥에 그대로)까지 날아가는 한 번의 여행을 재생한다. 착지 직전(약 80~92% 구간)에는
-  // 일부러 같은 transform 값을 두 keyframe에 반복해서 "정지 구간(히트스톱)"을 만든다 -
-  // 격투 게임에서 타격의 무게감을 표현할 때 쓰는 기법과 같다. JS 타이머로 실제
-  // 애니메이션을 pause()/play()하던 예전 방식은 여러 카드가 겹칠 때 그 자체로 버벅임의
-  // 원인이 됐는데, keyframe 값 자체를 정지시키면 브라우저가 평소 이동과 완전히 동일한
-  // 방식(추가 JS 개입 없이)으로 처리해서 훨씬 매끄럽다. 모든 스타일을 같은 총 시간(DUR)
-  // 으로 맞춰서 "덱은 빠르고 손은 느리고..." 식으로 제각각 다르게 느껴지던 것도 없앴다.
+  // 바닥에 그대로)까지 날아가는 한 번의 여행을 재생한다. 모양은 buildApproachKeyframes
+  // (들어올리기 -> 내리치기 -> 닿은 자리에서 살짝 눌림)이고, 타격음/충격링은 onfinish가
+  // 아니라 실제로 닿는 순간(hitAt)에 예약한다(scheduleHit).
   function flyCard(elm, dx, dy, style, delay = 0, primaryMover = false, sweepStyle = false, size = null) {
     elm.classList.remove('pop');
     elm.style.transform = '';
@@ -792,17 +793,17 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     // (animateNewCards의 isSweptCapture) - flyCardViaMeeting의 스윕 구간과 정확히 같은
     // 모양(되감기 자세 없음)으로 재생해서 "함께 쓸려 들어간다"는 게 보이게 한다.
     const built = sweepStyle ? buildSweepKeyframes(dx, dy) : buildFlightKeyframes(style, dx, dy);
-    const { easing } = built;
     const keyframes = size ? resizeKeyframes(built.keyframes, shrinkEarly(size.fromK, 1), size.w, size.h) : built.keyframes;
 
-    const anim = elm.animate(keyframes, { duration: DUR, easing, delay, fill: delay > 0 ? 'backwards' : 'none' });
+    const anim = elm.animate(keyframes, { duration: DUR, easing: 'linear', delay, fill: delay > 0 ? 'backwards' : 'none' });
 
     // 이 카드가 "이번 턴의 실제 행위자"(방금 낸/뒤집은/뽑은/폭탄 카드)일 때만 무거운 타격
     // 연출(찌그러짐/충격링/밝기 플래시/타격음)을 준다. 캡처되어 먹은패로 들어가는 상대편
     // 카드(willCapture)는 그 카드를 낸 사람이 아니므로 별도의 "쾅"이 아니라, 더 가벼운
     // capture-flash 반짝임 + groupPunch 정도로만 반응한다. 그 외(레이아웃이 밀려서 몇 px
     // 이동한 무관한 카드들)는 아무 반응도 없이 조용히 미끄러지기만 한다.
-    const shouldPunch = primaryMover;
+    // 타격은 애니메이션이 끝날 때(onfinish)가 아니라 카드가 실제로 닿는 순간(hitAt)에 준다.
+    if (primaryMover && !sweepStyle) scheduleHit(elm, myGen, delay + built.hitAt * DUR, anim);
 
     anim.onfinish = () => {
       elm.style.zIndex = '';
@@ -815,12 +816,6 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
       // 구석에 뜬금없는 충격 링이 반짝이는("이펙트 에러") 유령 효과가 생긴다.
       if (!elm.isConnected) return;
       const flashed = maybeFlashCapture(elm);
-      if (shouldPunch) {
-        slamCard(elm);
-        spawnImpactRing(elm);
-        hitFlash(elm);
-        cardSlap();
-      }
       if (flashed) groupPunch(elm);
       maybeFlashFormed(elm);
     };
@@ -872,12 +867,12 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     // 먹는 턴의 손패 등)는 가만히 기다리는 게 아니라 짝까지 1초 넘게 느릿느릿 기어갔다 -
     // 그 사이 타격음(delay + approachDur)은 카드가 아직 공중에 있을 때 먼저 터졌고, 덱
     // 카드는 커진(오버슈트) 채로 한참 떠 있어서 "과하게 앞으로 튀어나온" 것처럼 보였다.
-    const approach = buildApproachKeyframes(style, dx, dy, viaDx, viaDy, 1);
+    const approach = buildApproachKeyframes(style, dx, dy, viaDx, viaDy);
     const approachFrames = size
       ? resizeKeyframes(approach.keyframes, lerp(size.fromK, size.viaK), size.w, size.h)
       : approach.keyframes;
-    elm.animate(approachFrames, {
-      duration: approachDur, easing: approach.easing, delay,
+    const anim1 = elm.animate(approachFrames, {
+      duration: approachDur, easing: 'linear', delay,
       fill: delay > 0 ? 'backwards' : 'none',
     });
     // ② 대기: 짝 위에 그대로 멈춰 있는다(같은 transform 두 개). ①이 끝나는 순간 정확히
@@ -890,20 +885,8 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
       });
     }
 
-    // 맞춰지는 지점 도착 타격(찌그러짐/충격링/플래시/소리) - 실제 keyframe 진행 시각과
-    // 정확히 같은 시점(delay + approachDur)에 맞춰 재생한다. 이 setTimeout은 애니메이션
-    // 객체와 무관한 별도의 JS 타이머라서, 그 사이 이 카드가 cancelPriorAnim으로 다른
-    // 애니메이션에 넘어갔어도(=세대 번호가 바뀌었어도) 이 타이머 자체는 그대로 실행되려
-    // 한다 - 세대 번호를 확인해서 넘어간 경우엔 조용히 건너뛴다. 이미 화면에서 빠진
-    // (detached) 카드도 마찬가지로 건너뛴다 - 안 그러면 화면 구석에 유령 충격 링이 튀는
-    // 것처럼 보인다.
-    setTimeout(() => {
-      if (elm.dataset.flightGen !== String(myGen) || !elm.isConnected) return;
-      slamCard(elm);
-      spawnImpactRing(elm);
-      hitFlash(elm);
-      cardSlap();
-    }, delay + approachDur);
+    // 짝에 "탁" 닿는 순간(hitAt)의 타격(충격링/플래시/소리).
+    scheduleHit(elm, myGen, delay + approach.hitAt * approachDur, anim1);
 
     // ③ 스윕: flyCard의 sweepStyle과 완전히 같은 모양(buildSweepKeyframes)을 맞춰지는
     // 지점(viaDx,viaDy) -> 최종 위치(0,0)로 재생한다. anim1이 끝나는 바로 그
@@ -913,12 +896,11 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     // JS 타이머 지연/오차가 끼어들 여지가 없다). fill:'none'이라 anim1이 활성인 동안은
     // 전혀 개입하지 않다가, 정확히 sweepStart부터 넘겨받는다.
     const sweepBuilt = buildSweepKeyframes(viaDx, viaDy);
-    const sweepEasing = sweepBuilt.easing;
     const sweepKeyframes = size
       ? resizeKeyframes(sweepBuilt.keyframes, shrinkEarly(size.viaK, 1), size.w, size.h)
       : sweepBuilt.keyframes;
     const anim2 = elm.animate(sweepKeyframes, {
-      duration: sweepDur, easing: sweepEasing, delay: sweepStart, fill: 'none',
+      duration: sweepDur, easing: 'linear', delay: sweepStart, fill: 'none',
     });
 
     anim2.onfinish = () => {
@@ -956,12 +938,12 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     const h = now.height || 0;
     const s = old.width && now.width ? old.width / now.width : 1;
     const sm = mix(s, 1, 0.6);
+    // 구간별 easing(offset = 실제 시각): 집어 들어 올리고(감속) 내 더미로 내려놓는다(가속 후 감속).
     const anim = elm.animate([
-      { offset: 0, transform: `translate(${dx + ((s - 1) * w) / 2}px, ${dy + ((s - 1) * h) / 2}px) scale(${s})` },
-      { offset: 0.5, transform: `translate(${mix(dx, 0, 0.5) + ((sm - 1) * w) / 2}px, ${mix(dy, 0, 0.5) - 28 + ((sm - 1) * h) / 2}px) scale(${sm})` },
-      { offset: 0.84, transform: 'translate(0px, 0px) scale(1.06)' },
+      { offset: 0, transform: `translate(${dx + ((s - 1) * w) / 2}px, ${dy + ((s - 1) * h) / 2}px) scale(${s})`, easing: 'cubic-bezier(.3,.6,.4,1)' },
+      { offset: 0.45, transform: `translate(${mix(dx, 0, 0.5) + ((sm - 1) * w) / 2}px, ${mix(dy, 0, 0.5) - 28 + ((sm - 1) * h) / 2}px) scale(${sm})`, easing: 'cubic-bezier(.45,0,.3,1)' },
       { offset: 1, transform: 'translate(0px, 0px) scale(1)' },
-    ], { duration: 440, easing: 'cubic-bezier(.2,.85,.3,1)', delay, fill: delay > 0 ? 'backwards' : 'none' });
+    ], { duration: 440, easing: 'linear', delay, fill: delay > 0 ? 'backwards' : 'none' });
     anim.onfinish = () => {
       elm.style.zIndex = '';
       elm.style.willChange = '';
@@ -1113,8 +1095,8 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     // "손패를 낸다(짝이 있으면 탁) -> 덱을 뒤집는다(짝이 있으면 또 탁) -> 그제서야 이번
     // 턴에 맞춰진 카드들이 전부 한꺼번에 내 먹은패로 쓸려 들어간다"는 순서를 지키기 위해,
     // 실제로 캡처가 걸린 페이즈들 중 가장 늦게 "탁" 하는 시점(+HOLD)을 전역 스윕 시작
-    // 시각으로 삼는다 - 손패만 캡처했으면 손패가 부딪힌 직후에, 손패+덱이 둘 다
-    // 캡처했으면 덱까지 부딪힌 뒤에야 다같이 스윕을 시작한다. handPhaseDur를 쓰는 이유는
+    // 시각으로 삼는다 - 덱을 뒤집는 턴이면 덱 카드까지 내려앉은 뒤에(아래 globalSweepStart),
+    // 덱을 안 뒤집는 턴(폭탄 등)이면 손패가 부딪힌 직후에 스윕을 시작한다. handPhaseDur를 쓰는 이유는
     // 폭탄이면 손패 페이즈 자체가 3장 시차(70ms씩)만큼 더 길어지기 때문이다(PHASE1_DUR만
     // 쓰면 마지막 폭탄 카드가 아직 도착도 안 했는데 스윕이 시작되는 어긋남이 생긴다).
     const handHitTime = handPhaseDur;
@@ -1123,9 +1105,13 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     // 한 번 더 옮기는 것이라 비행 시간도 그 스타일('move')을 따른다.
     const deckStyleForHit = deckCardId && oldRects.has(deckCardId) ? 'move' : 'deck';
     const deckHitTime = realDeckStart + approachDurFor(deckStyleForHit);
+    // 덱을 뒤집는 턴이면 손패만 짝이 맞았어도 덱 카드가 내려앉은 뒤에 가져간다 - 실제로도
+    // "내고 -> 뒤집고 -> 그다음 가져간다"이다(뒤집은 패가 같은 월이면 따닥/뻑이 되므로 뒤집기
+    // 전엔 가져갈 수가 없다). 예전엔 손패가 닿자마자 쓸어가서, 덱 카드가 뒤집히는 동안 이미
+    // 먹은패로 들어가 있었다.
     const globalSweepStart = HOLD + Math.max(
       handCaptures ? handHitTime : 0,
-      deckCaptures ? deckHitTime : 0,
+      (deckCaptures || (handCaptures && evt.flippedCardId)) ? deckHitTime : 0,
     );
     // 캡처되어 먹은패로 딸려가는(=primaryMover는 아니지만 willCapture인) 카드는 손패 짝이든
     // 덱 짝이든 상관없이 전부 이 전역 스윕 시작 시각(globalSweepStart)에 맞춰 동시에
@@ -1240,8 +1226,14 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
           if (DEBUG_ANIM) logAnim('[anim]', id, 'NO OLD RECT + NO ORIGIN -> instant, no animation');
           return; // 출처를 특정할 수 없으면(새 판 초기 배분 등) pop 효과만 남긴다
         }
-        dx = origin.left - now.left;
-        dy = origin.top - now.top;
+        // 덱 더미/상대 손패 줄은 카드와 크기가 달라서, 왼쪽 위 모서리끼리 맞추면 카드가 그
+        // 출발점의 오른쪽 아래로 치우친 자리(덱은 15px/29px)나 손패 줄 왼쪽 끝에서 나왔다.
+        // 출발점의 "중심"에서 나오게 한다. 도착이 미니 더미면(resizeKeyframes가 보통 크기로
+        // 키우며 왼쪽 위 기준 보정을 더하므로) 보통 크기 카드의 절반만큼을 기준으로 뺀다.
+        const fromW = now.width > 0 && now.width < FULL_W * 0.9 ? FULL_W : now.width;
+        const fromH = now.width > 0 ? now.height * (fromW / now.width) : now.height;
+        dx = origin.left + origin.width / 2 - now.left - fromW / 2;
+        dy = origin.top + origin.height / 2 - now.top - fromH / 2;
         if (DEBUG_ANIM) logAnim('[anim]', id, 'no old rect, origin=', style, { dx, dy });
       }
 
@@ -1373,14 +1365,15 @@ function dealCardsAnimation() {
       elm.classList.remove('pop');
       elm.getAnimations().forEach((a) => { try { a.cancel(); } catch (e) { /* 무시 */ } });
       const now = elm.getBoundingClientRect();
-      const dx = deckRect.left - now.left;
-      const dy = deckRect.top - now.top;
+      // 더미 중심에서 출발(scale은 카드 중심 기준이라 중심끼리 맞춰야 더미 위에서 나온다).
+      const dx = deckRect.left + deckRect.width / 2 - (now.left + now.width / 2);
+      const dy = deckRect.top + deckRect.height / 2 - (now.top + now.height / 2);
+      // 구간별 easing(offset = 실제 시각): 더미 위에서 뒤집어 들고(감속) 제자리에 내려놓는다.
       return elm.animate([
-        { offset: 0, transform: `translate(${dx}px, ${dy}px) scale(0.55) rotateY(180deg)` },
-        { offset: 0.55, transform: `translate(${dx * 0.3}px, ${dy * 0.3 - 20}px) scale(0.9) rotateY(0deg)` },
-        { offset: 0.85, transform: 'translate(0px, 0px) scale(1.06) rotateY(0deg)' },
+        { offset: 0, transform: `translate(${dx}px, ${dy}px) scale(0.55) rotateY(180deg)`, easing: 'cubic-bezier(.3,.6,.4,1)' },
+        { offset: 0.4, transform: `translate(${dx * 0.7}px, ${dy * 0.7 - 16}px) scale(0.95) rotateY(0deg)`, easing: 'cubic-bezier(.45,0,.3,1)' },
         { offset: 1, transform: 'translate(0px, 0px) scale(1) rotateY(0deg)' },
-      ], { duration: 360, easing: 'cubic-bezier(.2,.85,.3,1)', delay: i * DEAL_STEP, fill: 'backwards' });
+      ], { duration: 360, easing: 'linear', delay: i * DEAL_STEP, fill: 'backwards' });
     });
     if (deckStack) {
       deckStack.classList.remove('flipping');
@@ -2169,7 +2162,7 @@ function piValueOf(piCards) {
 // 덱에서 뒤집은 카드가 바닥 2장과 맞을 때, 서버는 "손패가 바닥에 내려앉고 덱 카드가 뒤집혀
 // 나오는" 중간 장면을 먼저 보내고 곧바로 선택을 요구한다. 선택 창을 바로 띄우면 그 창이 방금
 // 뒤집힌 카드를 가려서 무엇이 나왔는지 보지도 못한 채 고르게 된다 - 실제로는 뒤집은 패를 보고
-// 나서 고르므로, 덱 카드가 바닥에 내려앉을 만큼(덱 페이즈 시작 700ms + 비행 600ms) 기다린다.
+// 나서 고르므로, 덱 카드가 바닥에 내려앉을 만큼(덱 페이즈 시작 680ms + 비행 560ms) 기다린다.
 const REVEAL_BEFORE_CHOICE_MS = 1400;
 
 function handlePlayResponse(cardId, res) {

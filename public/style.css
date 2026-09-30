@@ -342,23 +342,6 @@ button:active { transform: translateY(1px) scale(0.98); box-shadow: 0 1px 3px rg
 }
 .card.pop { animation: cardPop 0.35s ease-out; }
 
-/* 덱/손에서 날아온 카드가 도착한 순간의 "찰진" 타격 임팩트. 찌그러지는 지점(10%)을 최대한
-   앞당기고 그 자리에서 짧게 붙잡아둔(18%까지 hold) 뒤에야 반동을 주는 게 핵심 - 충격이 눈에
-   "각인"되려면 찌그러지는 순간 자체가 거의 즉시여야 하고, 뒤이은 되튐은 천천히 풀려도 된다.
-   찌그러짐 폭도 가로 1.34배/세로 0.66배까지 더 키웠다. 이동 애니메이션이 끝난 뒤(그것도
-   flyCard의 히트스톱으로 한 번 더 멈췄다 풀린 뒤) 별도로 재생되므로 flyCard의 transform과
-   겹치지 않는다. */
-@keyframes cardSlam {
-  0% { transform: scale(1, 1); }
-  10% { transform: scale(1.46, 0.56); }
-  18% { transform: scale(1.46, 0.56); }
-  44% { transform: scale(0.86, 1.16); }
-  68% { transform: scale(1.06, 0.95); }
-  86% { transform: scale(0.98, 1.02); }
-  100% { transform: scale(1, 1); }
-}
-.card.slam { animation: cardSlam 0.32s cubic-bezier(.22,1,.36,1); }
-
 /* 착지 순간 카드 위에 흰색 오버레이(::after)가 아주 짧게 확 떴다 사라지는 히트 플래시.
    처음엔 카드 자체에 filter:brightness()를 애니메이션했었는데, filter 애니메이션은
    브라우저가 GPU 합성(compositing) 경로를 못 쓰고 매 프레임 다시 그려야 해서(특히 이
@@ -551,7 +534,7 @@ button:active { transform: translateY(1px) scale(0.98); box-shadow: 0 1px 3px rg
 
 /* 전정기관(vestibular) 장애 등으로 motion을 줄이고 싶어하는 사용자를 위한 설정.
    여기서 끄는 것들은 전부 JS가 setTimeout/prefersReducedMotion() 체크로 직접 관리하는
-   "장식용" keyframe 애니메이션뿐이다(카드 등장 pop/착지 slam, 캡처 반짝임/그릇 펀치, 뻑 형성
+   "장식용" keyframe 애니메이션뿐이다(카드 등장 pop, 착지 플래시, 캡처 반짝임/그릇 펀치, 뻑 형성
    반짝임, 보드 흔들림, 이벤트 배너, 덱 더미 들썩임, 점수 팝업) - animationend 이벤트를
    기다리는 로직이 없으므로 꺼도 게임 진행에는 전혀 영향이 없다. 반면 카드가 실제로
    이동하는 FLIP 애니메이션(client.js의 flyCard, Web Animations API)과 .impact-ring은
@@ -559,13 +542,9 @@ button:active { transform: translateY(1px) scale(0.98); box-shadow: 0 1px 3px rg
    이펙트, 캡처/뻑형성 반짝임 트리거)이 실제로 발생해야 하는 로직이라 CSS로 강제로 끌
    방법이 없고, .impact-ring은 client.js가 spawnImpactRing에서 이미 prefersReducedMotion()을
    직접 체크해 아예 만들지 않으므로 여기 넣으면 오히려 animationend가 못 불려 DOM에
-   그대로 남는 문제가 생긴다(그래서 .slam만 여기 두고 .impact-ring은 두지 않는다). flyCard의
-   히트스톱(착지 직전 오버슈트한 값을 keyframe 두 지점에 반복해 만든 "정지 구간")도 같은
-   이유로 여기서 끄지 않는다 - 추가 움직임이 아니라 "움직임을 잠깐 없애는" 것이라 오히려
-   이 사용자층에도 무해하다. */
+   그대로 남는 문제가 생긴다. */
 @media (prefers-reduced-motion: reduce) {
   .card.pop,
-  .card.slam,
   .card.hit-flash::after,
   .card.capture-flash,
   .card.formed-flash,
