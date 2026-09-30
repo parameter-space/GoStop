@@ -536,8 +536,8 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
   // 2단 동작을, 손 카드는 살짝 위로 튕겼다가 내려앉는 포물선을, 각각 선명하게 보여줄 수 있다.
   // delay(ms)는 폭탄처럼 손패 3장이 한꺼번에 나가는 경우, 실제로 손으로 세 장을 연달아
   // "탁탁탁" 내려치는 것처럼 조금씩 시차를 두고 착지시키기 위한 것이다(delay가 있을 때는
-  // fill:'both'로 대기 구간에도 시작 transform을 유지시켜, 지연 중 카드가 잠깐 순간이동한
-  // 것처럼 보이는 깜빡임을 막는다).
+  // fill:'backwards'로 대기 구간에도 시작 transform을 유지시켜, 지연 중 카드가 잠깐 순간이동한
+  // 것처럼 보이는 깜빡임을 막는다. 끝난 뒤까지 붙잡는 'both'는 CSS 들림 효과를 덮어써서 안 쓴다).
   // 이번 렌더의 이벤트(evt)가 지목하는 "실제로 행동을 일으킨 카드"인지 확인한다 - 방금 낸
   // 손패 카드, 방금 뒤집힌/뽑힌 덱 카드, 폭탄으로 나간 손패 3장. 이 카드만 무거운 타격
   // 연출(찌그러짐/충격링/소리)을 받는다 - 캡처되어 딸려가는 상대 카드나 레이아웃이 밀려
@@ -784,7 +784,7 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     const { easing } = built;
     const keyframes = size ? resizeKeyframes(built.keyframes, lerp(size.fromK, 1), size.w, size.h) : built.keyframes;
 
-    const anim = elm.animate(keyframes, { duration: DUR, easing, delay, fill: delay > 0 ? 'both' : 'none' });
+    const anim = elm.animate(keyframes, { duration: DUR, easing, delay, fill: delay > 0 ? 'backwards' : 'none' });
 
     // 이 카드가 "이번 턴의 실제 행위자"(방금 낸/뒤집은/뽑은/폭탄 카드)일 때만 무거운 타격
     // 연출(찌그러짐/충격링/밝기 플래시/타격음)을 준다. 캡처되어 먹은패로 들어가는 상대편
@@ -833,8 +833,10 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
   // 이러면 바닥 짝과 정확히 같은 시각에 정확히 같은 모양으로 움직인다. 두 애니메이션이
   // 같은 transform 속성을 동시에 건드리는 구간이 생기면 나중에 만든 쪽이 이겨서 먼저
   // 것을 완전히 덮어버리므로(그러면 접근 애니메이션이 안 보이는 버그가 생긴다), ①+②는
-  // fill:'backwards'(자기 시작 전만 유지, 끝난 뒤엔 놓음)로, ③은 fill:'forwards'(자기
-  // 시작 전엔 아무 효과 없음, 끝난 뒤엔 유지)로 서로 겹치는 구간이 전혀 없게 나눴다.
+  // fill:'backwards'(자기 시작 전만 유지, 끝난 뒤엔 놓음)로, ③은 fill:'none'(자기 활성
+  // 구간에만 효과)으로 서로 겹치는 구간이 전혀 없게 나눴다. 끝난 뒤에도 값을 붙잡아두는
+  // 'forwards'/'both'는 안 쓴다 - 최종 keyframe이 어차피 제자리(identity)라 모양은 같은데,
+  // 붙잡아두면 그 카드의 CSS transform(선택 시 들림, hover)을 계속 덮어써서 안 먹게 된다.
   function flyCardViaMeeting(elm, dx, dy, style, delay, viaDx, viaDy, waitMs, size = null) {
     elm.classList.remove('pop');
     elm.style.transform = '';
@@ -887,7 +889,7 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     // 순간(sweepStart)에 시작하도록
     // WAAPI 자체 delay로 미리 예약해둔다(정확한 타이밍을 위해 setTimeout으로 나중에
     // 새로 만들지 않고, 지금 한꺼번에 예약함 - 브라우저 컴포지터가 직접 타이밍을 맞춰서
-    // JS 타이머 지연/오차가 끼어들 여지가 없다). fill:'forwards'라 anim1이 활성인 동안은
+    // JS 타이머 지연/오차가 끼어들 여지가 없다). fill:'none'이라 anim1이 활성인 동안은
     // 전혀 개입하지 않다가, 정확히 sweepStart부터 넘겨받는다.
     const sweepBuilt = buildSweepKeyframes(viaDx, viaDy);
     const sweepEasing = sweepBuilt.easing;
@@ -895,7 +897,7 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
       ? resizeKeyframes(sweepBuilt.keyframes, lerp(size.viaK, 1), size.w, size.h)
       : sweepBuilt.keyframes;
     const anim2 = elm.animate(sweepKeyframes, {
-      duration: sweepDur, easing: sweepEasing, delay: sweepStart, fill: 'forwards',
+      duration: sweepDur, easing: sweepEasing, delay: sweepStart, fill: 'none',
     });
 
     anim2.onfinish = () => {
@@ -936,7 +938,7 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
       { offset: 0.82, transform: 'translate(0px, 0px) scale(1.1) rotate(2deg)' },
       { offset: 0.92, transform: 'translate(0px, 0px) scale(0.96) rotate(0deg)' },
       { offset: 1, transform: 'translate(0px, 0px) scale(1) rotate(0deg)' },
-    ], { duration: 600, easing: 'cubic-bezier(.2,.85,.3,1)', delay, fill: delay > 0 ? 'both' : 'none' });
+    ], { duration: 600, easing: 'cubic-bezier(.2,.85,.3,1)', delay, fill: delay > 0 ? 'backwards' : 'none' });
     anim.onfinish = () => {
       elm.style.zIndex = '';
       elm.style.willChange = '';
@@ -1191,7 +1193,7 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
           cancelPriorAnim(elm);
           elm.animate(
             [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'translate(0px, 0px)' }],
-            { duration: 180, easing: 'ease-out', delay: ambientDelay, fill: ambientDelay > 0 ? 'both' : 'none' },
+            { duration: 180, easing: 'ease-out', delay: ambientDelay, fill: ambientDelay > 0 ? 'backwards' : 'none' },
           );
           return;
         }
@@ -1326,6 +1328,43 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     const turnDone = Promise.all(primaryAnims.map((a) => a.finished.catch(() => {})));
     if (isNewGameEvent && evt.kind) turnDone.then(() => handleGameEvent(evt));
     resolveTurnDone(turnDone);
+  }));
+}
+
+// 새 판 시작: 섞은 더미에서 바닥과 내 손패로 한 장씩 나눠주는 모습. 매 판 같은 50장(같은 id)을
+// 다시 쓰다 보니, 예전엔 FLIP이 "지난 판에 그 카드가 있던 자리"(누군가의 먹은패, 바닥 등)를
+// 출발점으로 잡아서 새 판 카드들이 엉뚱한 곳에서 제각각 미끄러져 들어왔다. 새 판이면 이전 위치는
+// 무시하고 전부 더미에서 뒤집혀 나오게 한다(바닥 먼저, 그다음 내 손패).
+function dealCardsAnimation() {
+  return new Promise((resolve) => requestAnimationFrame(() => {
+    const deckStack = el('deck-stack');
+    const deckRect = deckStack ? deckStack.getBoundingClientRect() : null;
+    if (!deckRect) { resolve(); return; }
+    const targets = [
+      ...document.querySelectorAll('.floor .card[data-id]'),
+      ...document.querySelectorAll('#my-hand .card[data-id]'),
+    ];
+    const DEAL_STEP = 55;
+    const anims = targets.map((elm, i) => {
+      elm.classList.remove('pop');
+      elm.getAnimations().forEach((a) => { try { a.cancel(); } catch (e) { /* 무시 */ } });
+      const now = elm.getBoundingClientRect();
+      const dx = deckRect.left - now.left;
+      const dy = deckRect.top - now.top;
+      return elm.animate([
+        { offset: 0, transform: `translate(${dx}px, ${dy}px) scale(0.55) rotateY(180deg)` },
+        { offset: 0.55, transform: `translate(${dx * 0.3}px, ${dy * 0.3 - 20}px) scale(0.9) rotateY(0deg)` },
+        { offset: 0.85, transform: 'translate(0px, 0px) scale(1.06) rotateY(0deg)' },
+        { offset: 1, transform: 'translate(0px, 0px) scale(1) rotateY(0deg)' },
+      ], { duration: 420, easing: 'cubic-bezier(.2,.85,.3,1)', delay: i * DEAL_STEP, fill: 'backwards' });
+    });
+    if (deckStack) {
+      deckStack.classList.remove('flipping');
+      // eslint-disable-next-line no-unused-expressions
+      deckStack.offsetWidth;
+      deckStack.classList.add('flipping');
+    }
+    resolve(Promise.all(anims.map((a) => a.finished.catch(() => {}))));
   }));
 }
 
@@ -2269,12 +2308,15 @@ socket.on('room:state', (state) => {
   const oldFloorIds = captureFloorCardIds();
   const oldOwners = captureCardOwners();
   const isFirstRender = !hasRenderedGameOnce;
+  // 새 판이 시작됐는지(renderGame이 lastSeenRoundNumber를 갱신하기 전에 봐야 한다).
+  const isNewRound = !isFirstRender && lastSeenRoundNumber !== state.roundNumber;
   latestState = state;
   goScreen('game');
   const isNewGameEvent = renderGame(state);
-  const turnDone = isFirstRender
-    ? Promise.resolve()
-    : animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFloorIds, oldOwners);
+  let turnDone;
+  if (isFirstRender) turnDone = Promise.resolve();
+  else if (isNewRound) turnDone = dealCardsAnimation();
+  else turnDone = animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFloorIds, oldOwners);
   showDeferredModals(turnDone);
   hasRenderedGameOnce = true;
 });
