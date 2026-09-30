@@ -132,6 +132,9 @@ class Room {
       // 고를 부른 사람이 누구였는지"를 이 라운드 동안 계속 기억해둬야 finishRound에서 고박
       // 대상을 정확히 그 사람 한 명으로만 좁힐 수 있다.
       firstGoCallerId: null,
+      // 가장 최근에 고를 부른 사람. 고를 부른 뒤 더 점수를 못 낸 채 패가 다 떨어지면 나가리가
+      // 아니라 이 사람이 그때까지의 점수(고 가산/배율 포함)로 이긴다(finishExhaustedRound).
+      lastGoCallerId: null,
       resultLog: [],
       lastEvent: null,
     };
@@ -358,8 +361,9 @@ class Room {
     const eligible = score.total >= threshold && (!rp.hasCalledGo || score.total > rp.scoreAtLastGo);
 
     if (this.isRoundOver() && !eligible) {
-      // 아무도 못 끝내고 패가 다 떨어짐 -> 나가리
-      return this.finishAsNagari();
+      // 이번 패로는 끝낼 자격이 없는데 패가 다 떨어짐 -> 고를 부른 사람이 있으면 그 사람 승리,
+      // 아무도 없으면 나가리
+      return this.finishExhaustedRound();
     }
 
     // 마지막 패(모두의 손패가 다 떨어진 턴)에서 점수가 나면 더 둘 턴이 없으므로 "고"는 의미가
@@ -377,11 +381,11 @@ class Room {
     }
 
     if (this.isRoundOver()) {
-      return this.finishAsNagari();
+      return this.finishExhaustedRound();
     }
 
     const next = this.advanceTurn();
-    if (!next) return this.finishAsNagari();
+    if (!next) return this.finishExhaustedRound();
     return { status: 'continue', next, events: result.events };
   }
 
@@ -408,16 +412,17 @@ class Room {
     // 이 판에서 아직 아무도 고를 안 불렀으면 이 사람이 "처음 고를 선언한 사람"이 된다(고박
     // 대상 판정용). 이미 다른 사람이 먼저 불렀다면(firstGoCallerId가 이미 세팅됨) 갱신하지 않는다.
     if (!r.firstGoCallerId) r.firstGoCallerId = playerId;
+    r.lastGoCallerId = playerId;
     this.addLog(`${this.playerName(playerId)}님이 ${rp.goCount}고를 외쳤습니다!`);
     this.pushEvent('go', playerId, { goCount: rp.goCount });
     r.phase = 'playing';
     r.pendingGoStop = null;
 
     if (this.isRoundOver()) {
-      return this.finishAsNagari();
+      return this.finishExhaustedRound();
     }
     const next = this.advanceTurn();
-    if (!next) return this.finishAsNagari();
+    if (!next) return this.finishExhaustedRound();
     return { status: 'continue', next };
   }
 
@@ -459,6 +464,26 @@ class Room {
     this.addLog(`${this.playerName(winnerId)}님 승리! (${settlement.scoreBeforeBak}점)`);
     this.pushEvent('win', winnerId);
     return { status: 'round-end', ...r.lastResult };
+  }
+
+  // 패가 다 떨어져 더 둘 턴이 없을 때. 고를 부르고 계속 치다가 더 점수를 못 낸 채 패가
+  // 떨어진 경우, 예전엔 나가리(무효)로 처리해서 고를 부른 사람의 점수가 통째로 날아갔다 -
+  // 고는 "더 먹겠다"는 선언이지 이미 난 점수를 거는 게 아니므로, 판이 끝나면 그때까지의
+  // 점수로 그대로 이긴다. 여러 명이 고를 불렀다면 가장 나중에 부른 사람이 그 판의 주도권을
+  // 쥔 사람이다(먼저 부른 사람은 역전당한 셈이라 finishRound에서 고박 대상이 된다). 그 사이
+  // 피를 뺏겨 문턱 아래로 내려갔으면 이긴 게 아니므로 나가리다.
+  finishExhaustedRound() {
+    const r = this.round;
+    const callerId = r.lastGoCallerId;
+    const rp = callerId && r.players.find((p) => p.id === callerId);
+    if (rp) {
+      const score = engine.computeScore(rp);
+      if (score.total >= engine.scoreThreshold(this.players.length)) {
+        this.addLog(`${this.playerName(callerId)}님: 패가 다 떨어져 그대로 끝납니다.`);
+        return this.finishRound(callerId, rp.goCount);
+      }
+    }
+    return this.finishAsNagari();
   }
 
   finishAsNagari() {

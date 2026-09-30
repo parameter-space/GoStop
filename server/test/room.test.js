@@ -276,6 +276,42 @@ section('마지막 패(모두 손패 소진)에서 점수가 나면 고/스톱�
   assert.strictEqual(room.round.pendingGoStop, null, '고/스톱 대기 상태가 남으면 안 됨');
 });
 
+section('고를 부른 뒤 더 점수를 못 낸 채 패가 다 떨어지면 나가리가 아니라 고를 부른 사람이 그대로 이긴다', () => {
+  const byId = Object.fromEntries(buildDeck().map((c) => [c.id, c]));
+  const room = makeRoomWithRound({
+    playerIds: ['a', 'b'],
+    hand: { a: [byId['5-pi-a']], b: [] },
+    floor: [{ ...byId['9-pi-a'], placedBy: 'deck', stuck: false }],
+    deck: [byId['6-pi-a']], // 손패도 뒤집은 패도 짝이 없어 점수가 안 늘어남
+  });
+  const a = room.round.players[0];
+  a.captured.gwang.push(byId['1-gwang'], byId['3-gwang'], byId['8-gwang'], byId['11-gwang']);
+  a.captured.tti.push(byId['1-tti'], byId['2-tti'], byId['3-tti']); // 광 4점 + 홍단 3점 = 7점
+  a.hasCalledGo = true;
+  a.goCount = 1;
+  a.scoreAtLastGo = 7;
+  room.round.firstGoCallerId = 'a';
+  room.round.lastGoCallerId = 'a';
+  const res = room.playCard('a', '5-pi-a');
+  assert.strictEqual(res.status, 'round-end');
+  assert.strictEqual(room.round.lastResult.result, 'win', '나가리가 아니라 승리여야 함');
+  assert.strictEqual(room.round.lastResult.winnerId, 'a');
+  assert.ok(room.ledger.a > 0 && room.ledger.b < 0, '정산이 실제로 이뤄져야 함');
+});
+
+section('아무도 고를 부르지 않았고 아무도 점수를 못 낸 채 패가 다 떨어지면 나가리', () => {
+  const byId = Object.fromEntries(buildDeck().map((c) => [c.id, c]));
+  const room = makeRoomWithRound({
+    playerIds: ['a', 'b'],
+    hand: { a: [byId['5-pi-a']], b: [] },
+    floor: [{ ...byId['9-pi-a'], placedBy: 'deck', stuck: false }],
+    deck: [byId['6-pi-a']],
+  });
+  const res = room.playCard('a', '5-pi-a');
+  assert.strictEqual(res.status, 'round-end');
+  assert.strictEqual(room.round.lastResult.result, 'nagari');
+});
+
 section('라운드 결과에는 그 판 정산에 실제로 쓰인 점당 금액이 스냅샷으로 남고, 이후 점당 금액이 바뀌어도 그대로 유지된다', () => {
   // setPointValue는 phase를 안 가리고 언제든(라운드 종료 후, 다음 판을 시작하기 전이라도)
   // 호스트가 바꿀 수 있다. client.js의 결과 화면은 이 스냅샷(pointValueAtSettlement)으로

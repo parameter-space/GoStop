@@ -134,12 +134,9 @@ section('뻑: 손패+뒤집은패가 바닥 카드와 3장 겹쳐 보류', () =>
   assert.strictEqual(state.floor.length, 3);
 });
 
-section('뻑이 "형성"되는 순간에도 다른 참여자들에게 피를 1장씩 받아야 한다(자뻑도 동일)', () => {
-  // gostop_rules.md: "뻑을 먹은 사람은 자신이 뻑을 만들었는지(자뻑) 아닌지 구분 없이,
-  // 다른 참여자들에게 동일하게 피 1장씩 받는다" - 3장이 쌓이며 뻑이 "형성"되는 이
-  // 순간 자체에 이미 피를 받아야 하는데(나중에 4번째 카드로 실제로 걷어가는
-  // ppeok_resolved와는 별개), 기존에는 ppeok_formed가 finalizeCaptures의 피 보너스
-  // 집계에서 빠져 있어서 이 시점엔 피를 전혀 못 받고 있었다.
+section('뻑을 싼(형성한) 사람은 상대에게서 피를 받지 않는다', () => {
+  // gostop_rules.md 5장: 피를 받는 건 뻑을 "먹은" 사람(4번째 카드로 걷어간 사람)뿐이다.
+  // 뻑을 싼 사람은 먹으려던 카드까지 바닥에 묶이는 손해를 본 쪽이라 받을 게 없다.
   const deck = buildDeck();
   const byId = Object.fromEntries(deck.map((c) => [c.id, c]));
   const players = [
@@ -155,9 +152,34 @@ section('뻑이 "형성"되는 순간에도 다른 참여자들에게 피를 1�
   };
   const result = engine.playTurn(state, 'a', '7-pi-a');
   assert.ok(result.events.includes('ppeok_formed'));
-  assert.strictEqual(players[0].captured.pi.length, 2, '뻑을 형성한 사람은 상대 전원에게서 피 1장씩 받아온다');
-  assert.strictEqual(players[1].captured.pi.length, 1, 'b는 피 1장을 a에게 뺏김');
-  assert.strictEqual(players[2].captured.pi.length, 0, 'c는 피 1장을 a에게 뺏김');
+  assert.strictEqual(players[0].captured.pi.length, 0, '뻑을 싼 사람은 피를 받지 않는다');
+  assert.strictEqual(players[1].captured.pi.length, 2, 'b의 피는 그대로');
+  assert.strictEqual(players[2].captured.pi.length, 1, 'c의 피는 그대로');
+});
+
+section('뻑을 먹은(4번째 카드로 걷어간) 사람은 상대 전원에게서 피를 1장씩 받는다', () => {
+  const deck = buildDeck();
+  const byId = Object.fromEntries(deck.map((c) => [c.id, c]));
+  const players = [
+    { id: 'a', captured: { gwang: [], yeolkkeut: [], tti: [], pi: [] }, shakes: [] },
+    { id: 'b', captured: { gwang: [], yeolkkeut: [], tti: [], pi: [byId['1-pi-a'], byId['1-pi-b']] }, shakes: [] },
+    { id: 'c', captured: { gwang: [], yeolkkeut: [], tti: [], pi: [byId['2-pi-a']] }, shakes: [] },
+  ];
+  const state = {
+    players,
+    hand: { a: [byId['7-yeolkkeut']], b: [], c: [] },
+    floor: [
+      { ...byId['7-pi-a'], placedBy: 'b', stuck: true },
+      { ...byId['7-pi-b'], placedBy: 'deck', stuck: true },
+      { ...byId['7-tti'], placedBy: 'deck', stuck: true },
+    ],
+    deck: [byId['3-pi-a']],
+  };
+  const result = engine.playTurn(state, 'a', '7-yeolkkeut');
+  assert.ok(result.events.includes('ppeok_resolved'));
+  assert.strictEqual(players[0].captured.pi.length, 2 + 2, '뻑 더미의 피 2장 + 상대 둘에게서 1장씩');
+  assert.strictEqual(players[1].captured.pi.length, 1);
+  assert.strictEqual(players[2].captured.pi.length, 0);
 });
 
 section('덱에서 뒤집은 패가 바닥의 같은 월 2장과 매치되면 선택 대기(NEED_CHOICE2)', () => {

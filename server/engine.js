@@ -103,16 +103,14 @@ function finalizeCaptures(state, playerId, player, captured, events, flippedCard
     }
   }
 
-  // 피 보너스 지급 대상 파악 (쪽/싹쓸이/뻑형성/뻑해소 각각 1장, 자뻑도 동일)
+  // 피 보너스 지급 대상 파악 (쪽/싹쓸이/뻑해소 각각 1장, 자뻑도 동일)
   // gostop_rules.md 5장("뻑"): "뻑을 먹은 사람은 자신이 뻑을 만들었는지(자뻑) 아닌지
-  // 구분 없이, 다른 참여자들에게 동일하게 피 1장씩 받는다" - 즉 3장이 바닥에 쌓여
-  // "뻑이 형성되는"(ppeok_formed) 그 순간에도 이미 피를 받아야 하고, 나중에 4번째
-  // 카드로 그 더미를 실제로 걷어가는(ppeok_resolved) 순간에도 별도로 또 받는다(둘은
-  // 서로 다른 턴/사람에게 일어나는 별개의 사건이라 각자 챙긴다). 이 둘은 playTurn에서
-  // 서로 배타적인 분기라 한 호출에서 동시에 발생하지 않는다.
+  // 구분 없이, 다른 참여자들에게 동일하게 피 1장씩 받는다" - 피를 받는 건 4번째 카드로
+  // 그 더미를 실제로 걷어가는(ppeok_resolved) 사람뿐이다. 뻑을 "싼"(ppeok_formed) 사람은
+  // 먹으려던 카드까지 바닥에 묶여버린 손해를 본 쪽이라 아무것도 받지 않는다 - 예전엔 이
+  // 문구를 잘못 읽어 뻑을 싼 순간에도 상대 전원에게서 피를 받아오고 있었다.
   let piBonusCount = 0;
   if (events.includes('jjok')) piBonusCount += 1;
-  if (events.includes('ppeok_formed')) piBonusCount += 1;
   if (events.includes('ppeok_resolved')) piBonusCount += 1;
   const floorEmpty = state.floor.length === 0;
   if (floorEmpty && captured.length > 0) {
