@@ -324,7 +324,11 @@ function toggleFlex(card) {
 function captureCardRects() {
   const map = new Map();
   document.querySelectorAll('.card[data-id]').forEach((elm) => {
-    map.set(elm.dataset.id, elm.getBoundingClientRect());
+    const r = elm.getBoundingClientRect();
+    // 숨겨진(display:none) 엘리먼트는 (0,0,0,0)을 준다 - 그 값을 출발점으로 쓰면 화면 왼쪽
+    // 위 구석에서 날아오므로 기록하지 않는다(그러면 출처 없는 카드로 처리된다).
+    if (!r.width && !r.height) return;
+    map.set(elm.dataset.id, r);
   });
   return map;
 }
@@ -1426,9 +1430,52 @@ function beep(freq, duration, { type = 'sine', gain = 0.15, delay = 0 } = {}) {
   } catch (e) { /* 오디오 미지원 브라우저는 조용히 무시 */ }
 }
 
+// 효과음은 미리 받아 디코딩해둔 AudioBuffer를 Web Audio로 재생한다. 예전엔 매번
+// new Audio().cloneNode()로 틀었는데, HTMLAudio는 play()부터 실제 소리까지 수십 ms가
+// 제각각 걸리고 setTimeout 지연도 더해져서, (1) 착지음의 mp3와 같은 순간 Web Audio로
+// 예약한 저음(beep)이 "쿵..탁"처럼 두 번으로 벌어져 들렸고 (2) 카드가 닿는 순간과 소리가
+// 매번 조금씩 다르게 어긋났다. 이제 둘 다 같은 오디오 시계(ctx.currentTime)에 예약한다.
+// 버퍼가 아직 준비 안 됐으면(첫 클릭 전/로딩 중) 예전 방식으로 대신 재생한다.
+const sfxBytes = {};   // file -> ArrayBuffer (첫 클릭 전에도 미리 받아둠)
+const sfxBuffers = {}; // file -> AudioBuffer (오디오 컨텍스트가 생긴 뒤 디코딩)
+const SFX_FILES = ['card-slap-real.mp3', 'capture-check.mp3', 'match-success.mp3', 'ppeok.mp3', 'ppeok-resolved.mp3',
+  'ttadak.mp3', 'sweep.mp3', 'go.mp3', 'win.mp3', 'bonus-reveal.mp3', 'ui-click.mp3'];
+function decodeSfx(file) {
+  if (!audioCtx || sfxBuffers[file] || !sfxBytes[file]) return;
+  const bytes = sfxBytes[file];
+  sfxBytes[file] = null; // decodeAudioData는 넘긴 버퍼를 소모하므로 한 번만
+  audioCtx.decodeAudioData(bytes).then((buf) => { sfxBuffers[file] = buf; sfxDurationMs[file] = buf.duration * 1000; }).catch(() => {});
+}
+SFX_FILES.forEach((file) => {
+  fetch(`assets/audio/${file}`).then((r) => (r.ok ? r.arrayBuffer() : null)).then((bytes) => {
+    if (!bytes) return;
+    sfxBytes[file] = bytes;
+    decodeSfx(file);
+  }).catch(() => {});
+});
+function unlockAudio() {
+  ensureAudio();
+  SFX_FILES.forEach(decodeSfx);
+}
+document.addEventListener('keydown', unlockAudio, { once: true });
+document.addEventListener('pointerdown', unlockAudio, { once: true });
+
 const sfxCache = {};
 function playSfx(file, { volume = 0.6, rate = 1, delay = 0 } = {}) {
   if (soundMuted) return;
+  const buf = sfxBuffers[file];
+  if (buf && audioCtx && audioCtx.state === 'running') {
+    try {
+      const src = audioCtx.createBufferSource();
+      src.buffer = buf;
+      src.playbackRate.value = rate;
+      const g = audioCtx.createGain();
+      g.gain.value = volume;
+      src.connect(g).connect(audioCtx.destination);
+      src.start(audioCtx.currentTime + Math.max(0, delay));
+      return;
+    } catch (e) { /* 아래 예전 방식으로 */ }
+  }
   const fire = () => {
     try {
       let base = sfxCache[file];
@@ -1511,8 +1558,7 @@ const FALLBACK_SFX_DUR_MS = 900; // 아직 길이를 못 읽은(로딩 중인) �
 function sfxDurationOf(file) {
   return sfxDurationMs[file] || FALLBACK_SFX_DUR_MS;
 }
-['card-slap-real.mp3', 'capture-check.mp3', 'match-success.mp3', 'ppeok.mp3', 'ppeok-resolved.mp3',
-  'ttadak.mp3', 'sweep.mp3', 'go.mp3', 'win.mp3', 'bonus-reveal.mp3', 'ui-click.mp3'].forEach((file) => {
+SFX_FILES.forEach((file) => {
   const probe = new Audio(`assets/audio/${file}`);
   probe.addEventListener('loadedmetadata', () => { sfxDurationMs[file] = probe.duration * 1000; });
 });
@@ -2183,7 +2229,9 @@ function openChoiceModal(matches, onPick) {
   const box = el('choice-options');
   box.innerHTML = '';
   matches.forEach((c) => {
-    box.appendChild(cardEl(c, { onClick: () => { hideModal('modal-choice'); onPick(c.id); } }));
+    const cel = cardEl(c, { onClick: () => { hideModal('modal-choice'); onPick(c.id); } });
+    cel.removeAttribute('data-id'); // 표시용 사본(openMonthModal 주석 참고)
+    box.appendChild(cel);
   });
   showModal('modal-choice');
 }
@@ -2199,7 +2247,13 @@ function openMonthModal(modalId, optionsId, cards, onPick) {
   box.innerHTML = '';
   cards.forEach((c) => {
     if (!c) return;
-    box.appendChild(cardEl(c, { onClick: () => onPick(c.month) }));
+    const cel = cardEl(c, { onClick: () => onPick(c.month) });
+    // 표시용 사본이라 data-id를 뗀다. 안 떼면 창이 닫혀 숨겨진 뒤에도 DOM에 남은 이 사본이
+    // 같은 id의 진짜 카드(손패/바닥)보다 문서 뒤쪽에 있어서, 렌더 직전 위치 기록
+    // (captureCardRects)이 진짜 카드의 위치를 숨겨진 사본의 (0,0)으로 덮어썼다 - 그 카드가
+    // 다음에 움직일 때 화면 왼쪽 위 구석에서 날아왔다.
+    cel.removeAttribute('data-id');
+    box.appendChild(cel);
   });
   showModal(modalId);
 }
