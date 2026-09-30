@@ -949,7 +949,9 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     return anim;
   }
 
-  requestAnimationFrame(() => {
+  // 이번 턴의 카드들이 전부 내려앉는 시점에 풀리는 Promise를 돌려준다(고/스톱·결과 창을 그
+  // 뒤에 띄우는 데 쓴다 - showDeferredModals 참고).
+  return new Promise((resolveTurnDone) => requestAnimationFrame(() => {
     // 한 턴 안에서도 실제로는 "손패를 낸다 -> (짝이 맞으면 탁) -> 덱을 뒤집는다 ->
     // (짝이 맞으면 또 탁) -> 그제서야 먹은 패들이 내 앞으로 쓸려 들어온다"처럼 순서가 있는
     // 사건인데, 예전에는 이 모든 카드가 한 렌더 안에서 전부 동시에 날아가고 있었다(그래서
@@ -1321,10 +1323,10 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     // 참고). 이번 렌더에 날아온 카드가 하나도 없는 이벤트(고/스톱 선언처럼 새로 이동하는
     // 카드가 없는 경우)는 primaryAnims가 비어 있으므로 Promise.all([])이 바로 다음
     // 마이크로태스크에서 풀려 사실상 즉시 재생된다.
-    if (isNewGameEvent && evt.kind) {
-      Promise.all(primaryAnims.map((a) => a.finished.catch(() => {}))).then(() => handleGameEvent(evt));
-    }
-  });
+    const turnDone = Promise.all(primaryAnims.map((a) => a.finished.catch(() => {})));
+    if (isNewGameEvent && evt.kind) turnDone.then(() => handleGameEvent(evt));
+    resolveTurnDone(turnDone);
+  }));
 }
 
 // ---------- 사운드 ----------
@@ -1781,6 +1783,20 @@ function renderRoom(state) {
 
 // ---------- 게임 화면 ----------
 let lastSeenRoundNumber = null;
+
+// 렌더가 "띄워야 한다"고 판단한 모달들. 실제로 띄우는 건 그 렌더의 카드 애니메이션이 끝난 뒤
+// (+ 배너/효과음이 먼저 들리도록 약간의 여유)이다. 그 사이 새 상태가 오면 그 렌더의 판단이
+// 이긴다(modalToken) - 이미 필요 없어진 창이 뒤늦게 뜨는 일을 막는다.
+const deferredModals = new Set();
+let modalToken = 0;
+const MODAL_AFTER_LANDING_MS = 450;
+function showDeferredModals(turnDone) {
+  const token = ++modalToken;
+  Promise.resolve(turnDone).then(() => new Promise((r) => setTimeout(r, MODAL_AFTER_LANDING_MS))).then(() => {
+    if (token !== modalToken) return;
+    deferredModals.forEach((id) => showModal(id));
+  });
+}
 function renderGame(state) {
   const round = state.round;
   const me = round.players.find((p) => p.id === myId);
@@ -1898,9 +1914,15 @@ function renderGame(state) {
     const div = cardEl(c, {
       selected: c.id === selectedHandCardId,
       onClick: () => {
-        if (!canAct || hasSkipDebt) return;
+        // 보낸 요청의 응답이 오기 전에 또 누르면(더블클릭 등) 두 번째 요청은 이미 차례가 넘어간
+        // 뒤라 "당신의 차례가 아닙니다" 알림이 떴다 - 응답 전에는 추가 입력을 받지 않는다.
+        if (!canAct || hasSkipDebt || playInFlight) return;
         if (c.type === 'bonus') { playBonus(c.id); return; }
         selectedHandCardId = c.id;
+        // 서버 응답(보통 로컬 몇 ms, 배포 환경이면 100~300ms)을 기다리는 동안에도 누른 카드가
+        // 바로 손에서 살짝 들려 "이 카드를 냈다"는 반응이 즉시 보이게 한다. 응답이 와서
+        // 다시 그려지면 이 들린 자리에서 그대로 날아간다.
+        div.classList.add('selected');
         tryPlay(c.id);
       },
     });
@@ -1933,19 +1955,23 @@ function renderGame(state) {
       hideModal('modal-bomb');
     });
 
-  // 고/스톱 모달
+  // 고/스톱 모달 / 라운드 종료 모달 - 띄우는 건 이번 턴 카드가 다 내려앉은 뒤로 미룬다
+  // (showDeferredModals). 예전엔 상태가 도착하자마자 떠서, 방금 먹은 카드들이 아직 날아가는
+  // 도중에 창이 판을 가려버렸다 - 실제로는 먹을 걸 다 가져오고 점수를 확인한 뒤에 고/스톱을
+  // 정한다. 닫는 건 즉시 한다.
   if (round.pendingGoStop && round.pendingGoStop.playerId === myId) {
     el('gostop-score-label').textContent = `현재 ${round.pendingGoStop.score.total}점입니다. 고 하시겠습니까?`;
-    showModal('modal-gostop');
+    deferredModals.add('modal-gostop');
   } else {
+    deferredModals.delete('modal-gostop');
     hideModal('modal-gostop');
   }
 
-  // 라운드 종료 모달
   if (round.phase === 'round-end' && round.lastResult) {
     renderResult(round.lastResult, state, myPlayerMeta?.isHost);
-    showModal('modal-result');
+    deferredModals.add('modal-result');
   } else {
+    deferredModals.delete('modal-result');
     hideModal('modal-result');
   }
 
@@ -2026,8 +2052,23 @@ function handlePlayResponse(cardId, res) {
   }
 }
 
+// 카드 내기 요청을 보내고 응답을 기다리는 중인지. 연결이 끊겨 응답(ack)이 영영 안 오면
+// 입력이 계속 막혀버리므로, 끊김 시와 일정 시간 뒤에는 무조건 풀어준다.
+let playInFlight = false;
+let playInFlightTimer = null;
+function setPlayInFlight(v) {
+  playInFlight = v;
+  clearTimeout(playInFlightTimer);
+  if (v) playInFlightTimer = setTimeout(() => { playInFlight = false; }, 5000);
+}
+socket.on('disconnect', () => setPlayInFlight(false));
+
 function tryPlay(cardId, chosenFloorId) {
-  socket.emit('game:playCard', { cardId, chosenFloorId }, (res) => handlePlayResponse(cardId, res));
+  setPlayInFlight(true);
+  socket.emit('game:playCard', { cardId, chosenFloorId }, (res) => {
+    setPlayInFlight(false);
+    handlePlayResponse(cardId, res);
+  });
 }
 
 function resolveChoice2(chosenId) {
@@ -2041,7 +2082,9 @@ function resolveChoice2(chosenId) {
 // 보너스패를 손패에서 낸다: 상대 피 1장씩 받고 덱에서 한 장 더 뽑음. 턴은 안 끝나서
 // 이어서 정식으로 카드 한 장을 더 내야 한다(별도 안내 없이, 그냥 계속 내 차례로 보임).
 function playBonus(cardId) {
+  setPlayInFlight(true);
   socket.emit('game:playBonus', { cardId }, (res) => {
+    setPlayInFlight(false);
     if (!res.ok) alert(res.error);
   });
 }
@@ -2209,6 +2252,9 @@ socket.on('room:state', (state) => {
   latestState = state;
   goScreen('game');
   const isNewGameEvent = renderGame(state);
-  if (!isFirstRender) animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFloorIds, oldOwners);
+  const turnDone = isFirstRender
+    ? Promise.resolve()
+    : animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFloorIds, oldOwners);
+  showDeferredModals(turnDone);
   hasRenderedGameOnce = true;
 });
