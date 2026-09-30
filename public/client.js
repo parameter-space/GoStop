@@ -567,8 +567,6 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
   // 지금 막 새 애니메이션을 받으려는 그 카드 자신에 대해서만, 꼭 필요한 만큼만 정리한다.
   function cancelPriorAnim(elm) {
     elm.getAnimations().forEach((a) => { try { a.cancel(); } catch (e) { /* 이미 끝났으면 무시 */ } });
-    // flyTransfer가 비행 중에만 바꿔두는 기준점 - 중간에 취소되면 onfinish가 안 불려 남는다.
-    elm.style.transformOrigin = '';
     // cancel()은 onfinish를 안 불러주므로, 이전 애니메이션이 suspendClip으로 들고 있던
     // 카운터를 그 onfinish 안의 restoreClip이 영영 못 돌려준다 - 여기서 대신 돌려준다.
     if (elm.dataset.clipHeld === '1') restoreClip(elm, elm.closest('.cap-groups'));
@@ -693,6 +691,10 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     });
   }
   const lerp = (a, b) => (o) => a + (b - a) * o;
+  // 작은 더미로 들어가며 줄어드는 구간 전용: 비행 앞부분(35%)에서 이미 도착 크기로 줄어든다.
+  // 처음엔 전 구간에 걸쳐 고르게 줄였더니, 큰 카드가 같은 거리를 같은 시간에 움직이는 셈이라
+  // 훨씬 굼뜨게 보이고 도착 직전에야 천천히 쪼그라드는 모양이 어색했다.
+  const shrinkEarly = (a, b) => (o) => a + (b - a) * Math.min(1, o / 0.35);
 
   // buildApproachKeyframes가 만든 "접근"(막 손/덱에서 튀어나오는 되감기 자세 포함) 뒤에,
   // 착지 직전 정지 구간(히트스톱)과 살짝 눌렸다 튕기는 정착 한 번을 덧붙인다. 손/덱에서
@@ -782,7 +784,7 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     // 모양(되감기 자세 없음)으로 재생해서 "함께 쓸려 들어간다"는 게 보이게 한다.
     const built = sweepStyle ? buildSweepKeyframes(dx, dy) : buildFlightKeyframes(style, dx, dy);
     const { easing } = built;
-    const keyframes = size ? resizeKeyframes(built.keyframes, lerp(size.fromK, 1), size.w, size.h) : built.keyframes;
+    const keyframes = size ? resizeKeyframes(built.keyframes, shrinkEarly(size.fromK, 1), size.w, size.h) : built.keyframes;
 
     const anim = elm.animate(keyframes, { duration: DUR, easing, delay, fill: delay > 0 ? 'backwards' : 'none' });
 
@@ -894,7 +896,7 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     const sweepBuilt = buildSweepKeyframes(viaDx, viaDy);
     const sweepEasing = sweepBuilt.easing;
     const sweepKeyframes = size
-      ? resizeKeyframes(sweepBuilt.keyframes, lerp(size.viaK, 1), size.w, size.h)
+      ? resizeKeyframes(sweepBuilt.keyframes, shrinkEarly(size.viaK, 1), size.w, size.h)
       : sweepBuilt.keyframes;
     const anim2 = elm.animate(sweepKeyframes, {
       duration: sweepDur, easing: sweepEasing, delay: sweepStart, fill: 'none',
@@ -914,9 +916,10 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
   }
 
   // 상대 더미에서 내 더미로 받아오는 피(또는 내가 넘겨주는 피) 한 장의 비행. 상대 더미는
-  // 작은(mini) 카드라 크기가 다르므로, 출발할 때는 원래 크기로 보이도록 scale로 맞춰
-  // 시작해서(기준점을 왼쪽 위로 둬야 FLIP 좌표와 모서리가 정확히 겹친다) 포물선을 그리며
-  // 새 크기로 커지며 내려앉는다.
+  // 작은(mini) 카드라 크기가 다르므로, 출발할 때는 원래 크기로 보이도록 scale로 맞춰 시작해서
+  // 포물선을 그리며 새 크기로 바뀌며 내려앉는다. 처음엔 왼쪽 위 모서리를 기준점으로 회전/확대해서
+  // 카드가 모서리를 축으로 비뚤게 휘청거렸다 - 중심 기준으로 두고 translate를 크기 차이의
+  // 절반만큼 보정해서(resizeKeyframes와 같은 방식) 모서리 위치를 맞춘다. 회전은 뺐다.
   function flyTransfer(elm, old, now, delay) {
     elm.classList.remove('pop');
     const myGen = cancelPriorAnim(elm);
@@ -928,22 +931,22 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     const clipContainer = suspendClip(elm);
     elm.style.willChange = 'transform';
     elm.style.transition = 'none';
-    elm.style.transformOrigin = 'top left';
     const dx = old.left - now.left;
     const dy = old.top - now.top;
+    const w = now.width || 0;
+    const h = now.height || 0;
     const s = old.width && now.width ? old.width / now.width : 1;
+    const sm = mix(s, 1, 0.6);
     const anim = elm.animate([
-      { offset: 0, transform: `translate(${dx}px, ${dy}px) scale(${s}) rotate(0deg)` },
-      { offset: 0.5, transform: `translate(${mix(dx, 0, 0.5)}px, ${mix(dy, 0, 0.5) - 36}px) scale(${mix(s, 1, 0.6)}) rotate(-6deg)` },
-      { offset: 0.82, transform: 'translate(0px, 0px) scale(1.1) rotate(2deg)' },
-      { offset: 0.92, transform: 'translate(0px, 0px) scale(0.96) rotate(0deg)' },
-      { offset: 1, transform: 'translate(0px, 0px) scale(1) rotate(0deg)' },
-    ], { duration: 600, easing: 'cubic-bezier(.2,.85,.3,1)', delay, fill: delay > 0 ? 'backwards' : 'none' });
+      { offset: 0, transform: `translate(${dx + ((s - 1) * w) / 2}px, ${dy + ((s - 1) * h) / 2}px) scale(${s})` },
+      { offset: 0.5, transform: `translate(${mix(dx, 0, 0.5) + ((sm - 1) * w) / 2}px, ${mix(dy, 0, 0.5) - 28 + ((sm - 1) * h) / 2}px) scale(${sm})` },
+      { offset: 0.84, transform: 'translate(0px, 0px) scale(1.06)' },
+      { offset: 1, transform: 'translate(0px, 0px) scale(1)' },
+    ], { duration: 440, easing: 'cubic-bezier(.2,.85,.3,1)', delay, fill: delay > 0 ? 'backwards' : 'none' });
     anim.onfinish = () => {
       elm.style.zIndex = '';
       elm.style.willChange = '';
       elm.style.transition = '';
-      elm.style.transformOrigin = '';
       restoreClip(elm, clipContainer);
       if (!elm.isConnected) return;
       if (maybeFlashCapture(elm)) groupPunch(elm);
@@ -1122,7 +1125,9 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     // 턴의 카드들이 전부 자리에 내려앉은 뒤에(캡처가 있으면 먹은패로 쓸려 들어간 뒤, 뻑 형성처럼
     // 캡처가 없으면 마지막 카드가 바닥에 놓인 뒤) 시작한다. 보너스패를 손에서 낸 경우는 규칙상
     // 피를 먼저 받고 나서 덱에서 한 장을 뽑으므로 덱에서 뽑는 카드는 기다리지 않는다.
-    const stealStart = 150 + Math.max(
+    // 착지와 살짝 겹쳐(-120ms) 시작한다 - 다 내려앉은 뒤 따로 시작하면 턴마다 0.7초 가까이
+    // 늘어나 전체가 굼떠 보였다.
+    const stealStart = -120 + Math.max(
       (handCaptures || deckCaptures) ? globalSweepStart + approachDurFor('move') : 0,
       hasHandPhase ? handPhaseDur : 0,
       (hasDeckPhase && !evt.drawnCardId) ? deckHitTime : 0,
@@ -1158,7 +1163,7 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
           maybeFlashCapture(elm); maybeFlashFormed(elm); return;
         }
         if (transferOrder.has(id)) {
-          const delay = stealStart + transferOrder.get(id) * 110;
+          const delay = Math.max(0, stealStart) + transferOrder.get(id) * 80;
           if (DEBUG_ANIM) logAnim('[anim]', id, 'transfer (피 받기)', { dx, dy, delay });
           flyTransfer(elm, old, now, delay);
           return;
@@ -1344,7 +1349,7 @@ function dealCardsAnimation() {
       ...document.querySelectorAll('.floor .card[data-id]'),
       ...document.querySelectorAll('#my-hand .card[data-id]'),
     ];
-    const DEAL_STEP = 55;
+    const DEAL_STEP = 40;
     const anims = targets.map((elm, i) => {
       elm.classList.remove('pop');
       elm.getAnimations().forEach((a) => { try { a.cancel(); } catch (e) { /* 무시 */ } });
@@ -1356,7 +1361,7 @@ function dealCardsAnimation() {
         { offset: 0.55, transform: `translate(${dx * 0.3}px, ${dy * 0.3 - 20}px) scale(0.9) rotateY(0deg)` },
         { offset: 0.85, transform: 'translate(0px, 0px) scale(1.06) rotateY(0deg)' },
         { offset: 1, transform: 'translate(0px, 0px) scale(1) rotateY(0deg)' },
-      ], { duration: 420, easing: 'cubic-bezier(.2,.85,.3,1)', delay: i * DEAL_STEP, fill: 'backwards' });
+      ], { duration: 360, easing: 'cubic-bezier(.2,.85,.3,1)', delay: i * DEAL_STEP, fill: 'backwards' });
     });
     if (deckStack) {
       deckStack.classList.remove('flipping');
@@ -1848,7 +1853,7 @@ let lastSeenRoundNumber = null;
 // 이긴다(modalToken) - 이미 필요 없어진 창이 뒤늦게 뜨는 일을 막는다.
 const deferredModals = new Set();
 let modalToken = 0;
-const MODAL_AFTER_LANDING_MS = 450;
+const MODAL_AFTER_LANDING_MS = 250;
 function showDeferredModals(turnDone) {
   const token = ++modalToken;
   Promise.resolve(turnDone).then(() => new Promise((r) => setTimeout(r, MODAL_AFTER_LANDING_MS))).then(() => {
