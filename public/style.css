@@ -171,13 +171,13 @@ button:active { transform: translateY(1px) scale(0.98); box-shadow: 0 1px 3px rg
   position: absolute; inset: 0; border-radius: inherit;
   background-color: #184a32;
   background-image: url('assets/cards/back.webp');
-  background-repeat: repeat; background-size: 30px 20px;
+  background-repeat: repeat; background-size: 30px 15px;
   backface-visibility: hidden;
   transform: rotateY(180deg);
   z-index: 2;
   pointer-events: none;
 }
-.card.mini.flip3d::before { background-size: 18px 12px; }
+.card.mini.flip3d::before { background-size: 18px 9px; }
 .card.back::before { display: none; } /* 카드 뒷면 자체는 별도 뒷면 레이어가 필요없음 */
 .card.gwang {
   border-color: var(--gold);
@@ -201,7 +201,7 @@ button:active { transform: translateY(1px) scale(0.98); box-shadow: 0 1px 3px rg
   background-color: #184a32;
   background-image: url('assets/cards/back.webp');
   background-repeat: repeat;
-  background-size: 30px 20px;
+  background-size: 30px 15px;
 }
 
 /* 보너스패: 실제 이미지 에셋이 없어서 자체 디자인(금박 문장 + 벡터 별)으로 그린 카드 */
@@ -263,7 +263,7 @@ button:active { transform: translateY(1px) scale(0.98); box-shadow: 0 1px 3px rg
 /* 미니 카드 (상대방 패널/먹은패 정리용 축소 버전) */
 .card.mini { width: 42px; height: 69px; border-width: 1px; border-radius: 4px; }
 .card.mini.pi.double::after { font-size: 8px; bottom: 1px; right: 1px; padding: 0 2px; }
-.card.mini.back { background-size: 18px 12px; }
+.card.mini.back { background-size: 18px 9px; }
 
 /* 덱(더미) 시각화 */
 .deck-stack {
@@ -274,7 +274,7 @@ button:active { transform: translateY(1px) scale(0.98); box-shadow: 0 1px 3px rg
   background-color: #184a32;
   background-image: url('assets/cards/back.webp');
   background-repeat: repeat;
-  background-size: 20px 13px;
+  background-size: 20px 10px;
   border: 1px solid #a9791f;
   box-shadow: 0 1px 3px rgba(0,0,0,0.4);
 }

@@ -985,7 +985,7 @@ npm start   # http://localhost:3000
 
 **에셋 출처(전부 무료/오픈라이선스, 인터넷 연결 없이도 실행 가능하도록
 저장소에 파일로 포함)**:
-- 카드 그림 48장+뒷면: Louie Mantia가 그려 위키백과 "Sakura (card game)"
+- 카드 그림 48장(뒷면 제외 - 뒷면은 tools/make_card_back.py로 직접 생성): Louie Mantia가 그려 위키백과 "Sakura (card game)"
   문서에 올린 일러스트, [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)
   (특정 제작사 상품 스캔이 아니라 위키백과용 원본 일러스트라 저작권 문제
   없음). `public/assets/cards/`.

@@ -72,9 +72,15 @@ npx cloudflared tunnel --url http://localhost:3000
 
 ## 에셋 출처 (전부 무료/오픈라이선스)
 
-- **카드 그림 48장 + 카드 뒷면**: Louie Mantia가 그려 위키백과 ["Sakura (card game)"](https://en.wikipedia.org/wiki/Sakura_(card_game)) 문서에 올린 일러스트. [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/) 라이선스라 출처 표기만 하면 자유롭게 쓸 수 있다. 특정 제작사가 파는 화투 상품 이미지를 그대로 스캔한 게 아니라, 위키백과용으로 새로 그려진 원본 일러스트라 저작권 문제 없이 쓸 수 있다. 파일 위치: `public/assets/cards/`.
-- **효과음**: [`uisfx`](https://uisfx.com) 오픈소스 사운드 팩([CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/), 출처 표기도 필요 없음)에서 스냅/락/더블클릭/스트릭/레벨업/성취 등을 골라 씀. 파일 위치: `public/assets/audio/`.
-- **카드 착지 타격음**: [Freesound.org](https://freesound.org/people/Zaxtor99/sounds/147532/)에 Zaxtor99가 올린 `card.wav`("카드 한 장이 테이블에 놓이는 소리를 직접 녹음함", [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/)). 파일: `public/assets/audio/card-slap-real.mp3`.
+- **카드 그림 48장** (`public/assets/cards/<월>-<종류>.webp`)
+  - 작성자: [Louie Mantia](https://commons.wikimedia.org/wiki/User:Louiemantia)
+  - 원본: 위키미디어 커먼즈 `File:Hanafuda_<Month>_<Type>.svg` 48장 (예: [Hanafuda_January_Hikari.svg](https://commons.wikimedia.org/wiki/File:Hanafuda_January_Hikari.svg)), 위키백과 ["Sakura (card game)"](https://en.wikipedia.org/wiki/Sakura_(card_game)) 문서에 쓰인 작성자 본인 창작 일러스트
+  - 라이선스: [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)
+  - 변경 사항: SVG를 244×400 WebP로 변환하고 파일 이름을 이 게임의 카드 id로 바꿈. 그림 자체는 수정하지 않음.
+  - 이 카드 그림 파일들(변환본 포함)은 원본과 같은 CC BY-SA 4.0으로 배포된다.
+- **카드 뒷면 무늬** (`public/assets/cards/back.webp`): 전통 물결무늬(세이가이하)를 [`tools/make_card_back.py`](tools/make_card_back.py)로 직접 그려 만든 타일. 외부 이미지를 쓰지 않았다.
+- **효과음** (`public/assets/audio/` 중 `card-slap-real.mp3`를 뺀 나머지): [UI SFX](https://uisfx.com) ([romainsimon/uisfx](https://github.com/romainsimon/uisfx), `packages/uisfx/sounds`)의 mechanical/studio 팩. 라이선스: [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) (출처 표기 의무 없음). 파일별 원본: `capture-check`=mechanical/check, `match-success`=mechanical/success, `ppeok`=mechanical/lock, `ppeok-resolved`=mechanical/unlock, `ttadak`=mechanical/double-click, `ui-click`=mechanical/select, `bonus-reveal`=mechanical/bonus, `card-drop`=mechanical/drop, `card-snap`=mechanical/snap, `press`=mechanical/press, `go`=studio/level-up, `sweep`=studio/streak, `win`=studio/achievement.
+- **카드 착지 타격음** (`public/assets/audio/card-slap-real.mp3`): [Freesound.org](https://freesound.org/people/Zaxtor99/sounds/147532/)의 Zaxtor99 `card.wav`. 라이선스: [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/). WAV를 MP3로 변환함.
 - 전부 이 저장소에 파일로 포함되어 있어서 실행할 때 인터넷에서 따로 받을 필요는 없다.
 
 ## 알려진 단순화 사항 (완벽한 공식 규칙과 다른 부분)
