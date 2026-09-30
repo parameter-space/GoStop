@@ -77,13 +77,16 @@ function resolveMatch(floor, playedCard) {
 
 // 덱에서 한 장 뒤집는다. 보너스패가 나오면 그 자리에서 바로 자기 창고(쌍피)로 가져가고
 // 계속 한 장씩 더 뒤집어서, 실제 월 카드가 나오거나 덱이 빌 때까지 반복한다.
-function drawFlipSkippingBonus(state, player, events) {
+// bonusIds에는 이번에 뒤집혀 나와 곧장 가져간 보너스패 id를 순서대로 적는다 - 클라이언트가
+// 그 카드를 "덱에서 뒤집혀 먹은패로 들어가는" 모습으로 그리려면 어느 카드였는지 알아야 한다.
+function drawFlipSkippingBonus(state, player, events, bonusIds = []) {
   let flippedCard = null;
   while (state.deck.length > 0) {
     const c = state.deck.shift();
     if (c.type === 'bonus') {
       addToCaptured(player, c);
       events.push('bonus_deck');
+      bonusIds.push(c.id);
       continue;
     }
     flippedCard = c;
@@ -93,7 +96,7 @@ function drawFlipSkippingBonus(state, player, events) {
 }
 
 // 캡처된 카드들을 창고에 반영하고, 쪽/뻑해소/싹쓸이 피 보너스까지 정산해서 최종 결과를 만든다.
-function finalizeCaptures(state, playerId, player, captured, events, flippedCard) {
+function finalizeCaptures(state, playerId, player, captured, events, flippedCard, bonusDeckIds = []) {
   for (const group of captured) {
     for (const c of group.cards) {
       addToCaptured(player, c);
@@ -124,7 +127,7 @@ function finalizeCaptures(state, playerId, player, captured, events, flippedCard
     }
   }
 
-  return { events, captured, flippedCard };
+  return { events, captured, flippedCard, bonusDeckIds };
 }
 
 // 한 턴(손패 내기 + 더미 뒤집기)을 처리한다.
@@ -180,7 +183,8 @@ function playTurn(state, playerId, handCardId, chosenFloorId) {
   }
 
   // 덱 뒤집기 (보너스패는 자동으로 스킵하며 자기 창고로)
-  const flippedCard = drawFlipSkippingBonus(state, player, events);
+  const bonusIds = [];
+  const flippedCard = drawFlipSkippingBonus(state, player, events, bonusIds);
 
   if (flippedCard) {
     if (reservedFloorCard && flippedCard.month === reservedFloorCard.month) {
@@ -214,12 +218,13 @@ function playTurn(state, playerId, handCardId, chosenFloorId) {
       } else if (match2.count === 2) {
         // 덱에서 뒤집은 카드가 바닥의 같은 월 2장과 매치 -> 플레이어가 직접 고르게 대기시킨다
         state.pendingChoice2 = {
-          playerId, flippedCard, matches: match2.matches, captured, events, step1Captured, step1Month,
+          playerId, flippedCard, matches: match2.matches, captured, events, step1Captured, step1Month, bonusIds,
         };
         const err = new Error('바닥의 두 카드 중 하나를 선택하세요');
         err.code = 'NEED_CHOICE2';
         err.matches = match2.matches;
         err.flippedCardId = flippedCard.id;
+        err.bonusDeckIds = bonusIds;
         throw err;
       } else {
         const stack2 = match2.matches;
@@ -235,7 +240,7 @@ function playTurn(state, playerId, handCardId, chosenFloorId) {
     captured.push({ cards: [handCard, reservedFloorCard], reason: 'normal' });
   }
 
-  return finalizeCaptures(state, playerId, player, captured, events, flippedCard);
+  return finalizeCaptures(state, playerId, player, captured, events, flippedCard, bonusIds);
 }
 
 // playTurn 중 NEED_CHOICE2로 대기 중이던 턴을, 플레이어가 고른 floor 카드로 마무리한다.
@@ -253,7 +258,7 @@ function resolveChoice2(state, playerId, chosenId) {
   }
   state.pendingChoice2 = null;
   const player = state.players.find((p) => p.id === playerId);
-  return finalizeCaptures(state, playerId, player, pending.captured, pending.events, pending.flippedCard);
+  return finalizeCaptures(state, playerId, player, pending.captured, pending.events, pending.flippedCard, pending.bonusIds || []);
 }
 
 // 폭탄 이후 스킵 턴 등, 손패 없이 덱만 뒤집는 경우. 보너스패 스킵/2장 매치 대기까지
@@ -262,10 +267,11 @@ function skipDeckFlip(state, playerId) {
   const player = state.players.find((p) => p.id === playerId);
   const events = [];
   const captured = [];
+  const bonusIds = [];
 
-  const flippedCard = drawFlipSkippingBonus(state, player, events);
+  const flippedCard = drawFlipSkippingBonus(state, player, events, bonusIds);
   if (!flippedCard) {
-    return finalizeCaptures(state, playerId, player, captured, events, null);
+    return finalizeCaptures(state, playerId, player, captured, events, null, bonusIds);
   }
 
   const match = resolveMatch(state.floor, flippedCard);
@@ -277,12 +283,13 @@ function skipDeckFlip(state, playerId) {
     captured.push({ cards: [flippedCard, only], reason: 'normal' });
   } else if (match.count === 2) {
     state.pendingChoice2 = {
-      playerId, flippedCard, matches: match.matches, captured, events, step1Captured: false, step1Month: null,
+      playerId, flippedCard, matches: match.matches, captured, events, step1Captured: false, step1Month: null, bonusIds,
     };
     const err = new Error('바닥의 두 카드 중 하나를 선택하세요');
     err.code = 'NEED_CHOICE2';
     err.matches = match.matches;
     err.flippedCardId = flippedCard.id;
+    err.bonusDeckIds = bonusIds;
     throw err;
   } else {
     state.floor = state.floor.filter((c) => c.month !== flippedCard.month);
@@ -290,7 +297,7 @@ function skipDeckFlip(state, playerId) {
     events.push('ppeok_resolved');
   }
 
-  return finalizeCaptures(state, playerId, player, captured, events, flippedCard);
+  return finalizeCaptures(state, playerId, player, captured, events, flippedCard, bonusIds);
 }
 
 // 손패에서 보너스패를 낸다: 상대 각각에게서 피 1장씩 받아오고, 덱에서 한 장을 손패로

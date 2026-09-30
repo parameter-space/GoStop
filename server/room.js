@@ -226,6 +226,7 @@ class Room {
       handCardId, flippedCardId: result.flippedCard ? result.flippedCard.id : null,
       chosenFloorId: chosenFloorId || null,
       chosenFor: chosenFloorId ? 'hand' : null,
+      bonusDeckIds: result.bonusDeckIds || [],
     });
     return this.afterAction(playerId, result);
   }
@@ -249,6 +250,8 @@ class Room {
     // 되고, 안 나갔다면(자동 진행) 손패가 손에서 곧장 나오는 것으로 그려야 하니 id를 넘겨준다.
     const pending = r.pendingChoice2;
     const handCardId = pending && !pending.revealed ? (pending.handCardId || null) : null;
+    // 덱을 뒤집다 나온 보너스패도 같은 이유 - 중간 장면에서 이미 먹은패로 날아갔으면 또 안 날린다.
+    const bonusDeckIds = pending && !pending.revealed ? (pending.bonusIds || []) : [];
     const result = engine.resolveChoice2(r, playerId, chosenId);
     this.addLog(this.describeEvents(playerId, result.events));
     this.emitPrimaryEvent(playerId, result.events, result.captured, {
@@ -256,6 +259,7 @@ class Room {
       flippedCardId: result.flippedCard ? result.flippedCard.id : null,
       chosenFloorId: chosenId,
       chosenFor: 'deck',
+      bonusDeckIds,
     });
     return this.afterAction(playerId, result);
   }

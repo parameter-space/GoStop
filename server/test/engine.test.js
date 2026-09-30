@@ -232,6 +232,8 @@ section('덱을 뒤집다가 보너스패가 나오면 즉시 획득하고 한 �
   assert.ok(!result.events.includes('jjok') && !result.events.includes('sweep'), '이후 무매치라 다른 캡처 이벤트는 없어야 함');
   assert.strictEqual(players[1].captured.pi.length, 1, '덱에서 나온 보너스만으로는 상대 피를 뺏지 않음');
   assert.ok(state.floor.some((c) => c.id === '2-pi-a'), '무매치 카드는 바닥에 남음');
+  assert.deepStrictEqual(result.bonusDeckIds, ['bonus-1'],
+    '덱에서 뒤집혀 나온 보너스패 id를 알려줘야 클라이언트가 덱->먹은패로 날아가는 모습을 그릴 수 있음');
 });
 
 section('따닥은 "같은 월" 4장이 한 턴에 모일 때만 성립해야 한다 (서로 다른 월의 캡처 두 건은 따닥이 아님)', () => {

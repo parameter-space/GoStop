@@ -274,6 +274,9 @@ function capturedGroups(captured, { mini, interactive, cacheKey } = {}) {
   if (!cached) {
     const wrap = document.createElement('div');
     wrap.className = 'cap-groups' + (mini ? ' mini' : '');
+    // 누구의 먹은패인지 - 피를 뺏기거나 받을 때 카드가 "다른 사람 더미로 넘어갔는지"를
+    // 렌더 전후로 비교하는 데 쓴다(captureCardOwners 참고).
+    if (cacheKey) wrap.dataset.owner = cacheKey;
     const groups = {};
     types.forEach((type) => {
       const group = document.createElement('div');
@@ -336,6 +339,17 @@ function captureFloorCardIds() {
   const set = new Set();
   document.querySelectorAll('.floor .card[data-id]').forEach((elm) => set.add(elm.dataset.id));
   return set;
+}
+
+// 먹은패 카드마다 "누구 더미에 있었는지"를 렌더 직전에 기록해둔다. 쪽/뻑/싹쓸이/폭탄/보너스패로
+// 상대에게서 피를 받아오면 그 카드는 상대 더미에서 내 더미로 옮겨가는데, 이걸 모르면 그냥
+// "자리만 바뀐 카드"로 보고 180ms짜리 가벼운 미끄러짐만 줘서 피를 뺏어온 순간이 거의 안 보였다.
+function captureCardOwners() {
+  const map = new Map();
+  document.querySelectorAll('.cap-groups[data-owner] .card[data-id]').forEach((elm) => {
+    map.set(elm.dataset.id, elm.closest('.cap-groups').dataset.owner);
+  });
+  return map;
 }
 
 // 손패 줄(내 손패/상대방 손패 더미)의 렌더 직전 위치를 기록해둔다. 카드를 낼 때
@@ -410,7 +424,7 @@ function spawnImpactRing(elm) {
   ring.addEventListener('animationend', () => ring.remove(), { once: true });
 }
 
-function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFloorIds) {
+function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFloorIds, oldOwners) {
   const deckStack = el('deck-stack');
   const deckRect = deckStack ? deckStack.getBoundingClientRect() : null;
   const evt = (state.round && state.round.lastEvent) || {};
@@ -448,10 +462,25 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     return isPrimaryMover(id) || Boolean(oldFloorIds && oldFloorIds.has(id));
   }
 
+  // 이번 렌더에 다른 사람 더미로 넘어간 먹은패(=쪽/뻑/싹쓸이/폭탄/보너스패로 받아온 피).
+  // DOM 순서대로 번호를 매겨 두고, 여러 장이면 한 장씩 차례로 날아오게 한다.
+  const transferOrder = new Map();
+  if (oldOwners) {
+    document.querySelectorAll('.cap-groups[data-owner] .card[data-id]').forEach((elm) => {
+      const prev = oldOwners.get(elm.dataset.id);
+      if (prev && prev !== elm.closest('.cap-groups').dataset.owner) {
+        transferOrder.set(elm.dataset.id, transferOrder.size);
+      }
+    });
+  }
+
   function maybeFlashCapture(elm) {
-    if (!captureKinds.includes(evt.kind)) return false;
+    const id = elm.dataset.id;
+    const transferred = transferOrder.has(id);
+    // 받아온 피는 뻑 형성처럼 "캡처"가 아닌 사건에서도 생기므로 사건 종류와 무관하게 반짝인다.
+    if (!transferred && !captureKinds.includes(evt.kind)) return false;
     if (!elm.closest('.cap-cards')) return false;
-    if (!capturedThisTurn(elm.dataset.id)) return false;
+    if (!transferred && !capturedThisTurn(id)) return false;
     restartAnimClass(elm, 'capture-flash');
     return true;
   }
@@ -515,7 +544,8 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
   // 몇 px 이동한 무관한 카드까지 다 반응하면 카드 여러 장이 겹칠 때 버벅였다(12장 참고).
   function isPrimaryMover(id) {
     return id === evt.handCardId || id === evt.flippedCardId || id === evt.drawnCardId
-      || (Array.isArray(evt.handCardIds) && evt.handCardIds.includes(id));
+      || (Array.isArray(evt.handCardIds) && evt.handCardIds.includes(id))
+      || (Array.isArray(evt.bonusDeckIds) && evt.bonusDeckIds.includes(id));
   }
   // 캡처되어 먹은패 더미(.cap-cards)로 들어가는 카드인지만 순수하게 확인한다(클래스는
   // 안 건드림) - primaryMover는 아니지만(내가 낸 카드도, 덱에서 뒤집힌 카드도 아닌) 그
@@ -537,6 +567,8 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
   // 지금 막 새 애니메이션을 받으려는 그 카드 자신에 대해서만, 꼭 필요한 만큼만 정리한다.
   function cancelPriorAnim(elm) {
     elm.getAnimations().forEach((a) => { try { a.cancel(); } catch (e) { /* 이미 끝났으면 무시 */ } });
+    // flyTransfer가 비행 중에만 바꿔두는 기준점 - 중간에 취소되면 onfinish가 안 불려 남는다.
+    elm.style.transformOrigin = '';
     // cancel()은 onfinish를 안 불러주므로, 이전 애니메이션이 suspendClip으로 들고 있던
     // 카운터를 그 onfinish 안의 restoreClip이 영영 못 돌려준다 - 여기서 대신 돌려준다.
     if (elm.dataset.clipHeld === '1') restoreClip(elm, elm.closest('.cap-groups'));
@@ -851,6 +883,44 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     return anim2;
   }
 
+  // 상대 더미에서 내 더미로 받아오는 피(또는 내가 넘겨주는 피) 한 장의 비행. 상대 더미는
+  // 작은(mini) 카드라 크기가 다르므로, 출발할 때는 원래 크기로 보이도록 scale로 맞춰
+  // 시작해서(기준점을 왼쪽 위로 둬야 FLIP 좌표와 모서리가 정확히 겹친다) 포물선을 그리며
+  // 새 크기로 커지며 내려앉는다.
+  function flyTransfer(elm, old, now, delay) {
+    elm.classList.remove('pop');
+    const myGen = cancelPriorAnim(elm);
+    const bumpZIndex = () => {
+      if (elm.dataset.flightGen !== String(myGen)) return;
+      elm.style.zIndex = String(nextFlightZIndex++);
+    };
+    if (delay > 0) setTimeout(bumpZIndex, delay); else bumpZIndex();
+    const clipContainer = suspendClip(elm);
+    elm.style.willChange = 'transform';
+    elm.style.transition = 'none';
+    elm.style.transformOrigin = 'top left';
+    const dx = old.left - now.left;
+    const dy = old.top - now.top;
+    const s = old.width && now.width ? old.width / now.width : 1;
+    const anim = elm.animate([
+      { offset: 0, transform: `translate(${dx}px, ${dy}px) scale(${s}) rotate(0deg)` },
+      { offset: 0.5, transform: `translate(${mix(dx, 0, 0.5)}px, ${mix(dy, 0, 0.5) - 36}px) scale(${mix(s, 1, 0.6)}) rotate(-6deg)` },
+      { offset: 0.82, transform: 'translate(0px, 0px) scale(1.1) rotate(2deg)' },
+      { offset: 0.92, transform: 'translate(0px, 0px) scale(0.96) rotate(0deg)' },
+      { offset: 1, transform: 'translate(0px, 0px) scale(1) rotate(0deg)' },
+    ], { duration: 600, easing: 'cubic-bezier(.2,.85,.3,1)', delay, fill: delay > 0 ? 'both' : 'none' });
+    anim.onfinish = () => {
+      elm.style.zIndex = '';
+      elm.style.willChange = '';
+      elm.style.transition = '';
+      elm.style.transformOrigin = '';
+      restoreClip(elm, clipContainer);
+      if (!elm.isConnected) return;
+      if (maybeFlashCapture(elm)) groupPunch(elm);
+    };
+    return anim;
+  }
+
   requestAnimationFrame(() => {
     // 한 턴 안에서도 실제로는 "손패를 낸다 -> (짝이 맞으면 탁) -> 덱을 뒤집는다 ->
     // (짝이 맞으면 또 탁) -> 그제서야 먹은 패들이 내 앞으로 쓸려 들어온다"처럼 순서가 있는
@@ -871,6 +941,13 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     const handPhaseDur = PHASE1_DUR
       + (Array.isArray(evt.handCardIds) ? (evt.handCardIds.length - 1) * 70 : 0);
     const deckPhaseStart = hasHandPhase ? handPhaseDur + PHASE_GAP : 0;
+    // 덱을 뒤집었더니 보너스패가 나오면 실제로는 "뒤집음 -> 보너스패라 바로 내 앞으로 가져옴 ->
+    // 한 장 더 뒤집음" 순서다. 예전엔 서버가 그 보너스패가 어떤 카드인지 안 알려줘서 먹은패에
+    // 날아가는 동작 없이 불쑥 나타났다. 이제는 보너스패가 한 장씩 덱에서 뒤집혀 먹은패로 먼저
+    // 날아가고, 진짜로 짝을 맞추는 덱 카드는 그만큼 뒤에(BONUS_FLIP_STEP씩) 뒤집힌다.
+    const bonusDeckIds = Array.isArray(evt.bonusDeckIds) ? evt.bonusDeckIds : [];
+    const BONUS_FLIP_STEP = 550;
+    const realDeckStart = deckPhaseStart + bonusDeckIds.length * BONUS_FLIP_STEP;
 
     // 카드 id는 "3-gwang"처럼 월(月)로 시작한다(보너스패만 예외) - 캡처되는 바닥 카드가
     // 손패로 낸 카드와 짝인지, 덱에서 뒤집힌 카드와 짝인지는 서버가 따로 안 알려주지만,
@@ -991,7 +1068,7 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     // 선택 후 고른 짝 위로 옮기는 마무리 단계)는 덱에서 새로 뒤집혀 나오는 게 아니라 바닥에서
     // 한 번 더 옮기는 것이라 비행 시간도 그 스타일('move')을 따른다.
     const deckStyleForHit = deckCardId && oldRects.has(deckCardId) ? 'move' : 'deck';
-    const deckHitTime = deckPhaseStart + approachDurFor(deckStyleForHit);
+    const deckHitTime = realDeckStart + approachDurFor(deckStyleForHit);
     const globalSweepStart = HOLD + Math.max(
       handCaptures ? handHitTime : 0,
       deckCaptures ? deckHitTime : 0,
@@ -1009,6 +1086,15 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     // 덱이든 먼저 부딪힌 쪽에서 이미 "이 자리가 빈다"는 신호가 충분히 나온 뒤이므로,
     // 그 시점에 채워도 자연스럽다(손패가 캡처했으면 손패 쪽 신호를, 손패는 그냥 내고
     // 덱만 캡처했으면 덱 쪽 신호를 기준으로 삼는다).
+    // 피를 받아오는 건 실제로도 "먹을 걸 다 먹은 뒤" 상대들이 한 장씩 건네주는 것이므로, 이번
+    // 턴의 카드들이 전부 자리에 내려앉은 뒤에(캡처가 있으면 먹은패로 쓸려 들어간 뒤, 뻑 형성처럼
+    // 캡처가 없으면 마지막 카드가 바닥에 놓인 뒤) 시작한다. 보너스패를 손에서 낸 경우는 규칙상
+    // 피를 먼저 받고 나서 덱에서 한 장을 뽑으므로 덱에서 뽑는 카드는 기다리지 않는다.
+    const stealStart = 150 + Math.max(
+      (handCaptures || deckCaptures) ? globalSweepStart + approachDurFor('move') : 0,
+      hasHandPhase ? handPhaseDur : 0,
+      (hasDeckPhase && !evt.drawnCardId) ? deckHitTime : 0,
+    );
     const firstHitTime = handCaptures ? handHitTime : (deckCaptures ? deckHitTime : 0);
     const lastDepartureStart = (handCaptures || deckCaptures) ? (HOLD + firstHitTime) : 0;
 
@@ -1033,6 +1119,12 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
         if (Math.abs(dx) < 1 && Math.abs(dy) < 1) {
           if (DEBUG_ANIM) logAnim('[anim]', id, 'unchanged, skip');
           maybeFlashCapture(elm); maybeFlashFormed(elm); return;
+        }
+        if (transferOrder.has(id)) {
+          const delay = stealStart + transferOrder.get(id) * 110;
+          if (DEBUG_ANIM) logAnim('[anim]', id, 'transfer (피 받기)', { dx, dy, delay });
+          flyTransfer(elm, old, now, delay);
+          return;
         }
         // 이번 턴의 실제 행위자도 아니고 캡처되는 것도 아닌데 자리만 바뀐 카드 - .floor는
         // justify-content:center로 가운데 정렬돼 있고 .hand-row도 마찬가지라, 카드 한 장이
@@ -1072,7 +1164,7 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
         let origin = null;
         if (evt.flippedCardId === id) {
           origin = deckRect; style = 'deck'; deckTapped = true;
-        } else if (evt.drawnCardId === id) {
+        } else if (evt.drawnCardId === id || bonusDeckIds.includes(id)) {
           origin = deckRect; style = 'deck'; deckTapped = true;
         } else if (evt.handCardId === id) {
           origin = oldHandRowRects.get(evt.playerId) || deckRect; style = 'hand';
@@ -1105,7 +1197,11 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
       // 모양을 타는 flyCardViaMeeting의 스윕 구간과 이 카드가 똑같이 움직이게 하기 위함.
       const isSweptCapture = !primary && willCapture(elm);
       let delay;
-      if (style === 'deck') delay = deckPhaseStart;
+      if (style === 'deck') {
+        delay = bonusDeckIds.includes(id)
+          ? deckPhaseStart + bonusDeckIds.indexOf(id) * BONUS_FLIP_STEP
+          : realDeckStart;
+      }
       else if (bombIndex > 0) delay = bombIndex * 70;
       else if (isSweptCapture) delay = globalSweepStart;
       else delay = 0;
@@ -1164,12 +1260,15 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     if ((deckTapped || deckEventPending) && deckStack) {
       // 더미 들썩임도 실제 덱 카드가 날아가기 시작하는 ②페이즈 시점에 맞춰 지연시킨다 -
       // 안 그러면 손패 페이즈가 아직 진행 중인데 더미가 먼저 들썩여서 순서가 어긋나 보인다.
-      setTimeout(() => {
-        deckStack.classList.remove('flipping');
-        // eslint-disable-next-line no-unused-expressions
-        deckStack.offsetWidth;
-        deckStack.classList.add('flipping');
-      }, deckPhaseStart);
+      // 보너스패가 나와서 여러 번 뒤집는 턴이면 뒤집을 때마다 한 번씩 들썩인다.
+      for (let i = 0; i <= bonusDeckIds.length; i++) {
+        setTimeout(() => {
+          deckStack.classList.remove('flipping');
+          // eslint-disable-next-line no-unused-expressions
+          deckStack.offsetWidth;
+          deckStack.classList.add('flipping');
+        }, deckPhaseStart + i * BONUS_FLIP_STEP);
+      }
     }
 
     // 배너/효과음/보드 흔들기는 카드가 실제로 다 착지한 뒤에 재생한다(위 primaryAnims 주석
@@ -2059,10 +2158,11 @@ socket.on('room:state', (state) => {
   const oldRects = captureCardRects();
   const oldHandRowRects = captureHandRowRects();
   const oldFloorIds = captureFloorCardIds();
+  const oldOwners = captureCardOwners();
   const isFirstRender = !hasRenderedGameOnce;
   latestState = state;
   goScreen('game');
   const isNewGameEvent = renderGame(state);
-  if (!isFirstRender) animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFloorIds);
+  if (!isFirstRender) animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFloorIds, oldOwners);
   hasRenderedGameOnce = true;
 });

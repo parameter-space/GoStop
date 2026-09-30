@@ -268,6 +268,7 @@ io.on('connection', (socket) => {
         // 이 카드가 이번 턴의 행위자인지 몰라 그냥 자리만 옮긴 카드 취급을 받는다).
         ctx.room.pushEvent('deck_reveal', ctx.playerId, {
           handCardId: e.handCardId || null, flippedCardId: e.flippedCardId || null,
+          bonusDeckIds: e.bonusDeckIds || [],
         });
         // 이 중간 장면이 실제로 화면에 나갔음을 기록 - 선택 후 마무리(resolveChoice2)는 이걸 보고
         // 손패를 "이미 바닥에 있던 카드"로 쓸어갈지, "손에서 곧장 나오는 카드"로 그릴지 정한다.
