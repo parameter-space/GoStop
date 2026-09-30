@@ -675,6 +675,25 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     };
   }
 
+  // 출발 지점과 도착 지점의 카드 크기가 다를 때(바닥의 보통 카드가 상대방의 작은 먹은패 더미로
+  // 들어가는 경우 등) 그 크기 변화를 keyframe에 녹인다. FLIP은 위치만 되짚고 크기는 도착 지점
+  // 크기(미니) 그대로라서, 예전엔 상대가 캡처하는 순간 바닥 카드가 제자리에서 뚝 작아진 채로
+  // 날아가고, 상대가 낸 손패도 처음부터 작은 크기로 바닥 짝을 때렸다. kAt(offset)은 그
+  // 시점의 크기 배율(도착 크기 대비)이고, w/h는 도착 크기다. scale은 카드 중심 기준이라
+  // 커진 만큼 translate를 반씩 보정해야 왼쪽 위 모서리가 원래 계산한 자리에 맞는다.
+  function resizeKeyframes(keyframes, kAt, w, h) {
+    if (!w || !h) return keyframes;
+    return keyframes.map((f) => {
+      const k = kAt(f.offset);
+      if (!f.transform || Math.abs(k - 1) < 0.02) return f;
+      let t = f.transform.replace(/translate\(([-\d.e]+)px, ([-\d.e]+)px\)/, (m, x, y) =>
+        `translate(${Number(x) + ((k - 1) * w) / 2}px, ${Number(y) + ((k - 1) * h) / 2}px)`);
+      t = /scale\(/.test(t) ? t.replace(/scale\(([-\d.e]+)\)/, (m, s) => `scale(${Number(s) * k})`) : `${t} scale(${k})`;
+      return { ...f, transform: t };
+    });
+  }
+  const lerp = (a, b) => (o) => a + (b - a) * o;
+
   // buildApproachKeyframes가 만든 "접근"(막 손/덱에서 튀어나오는 되감기 자세 포함) 뒤에,
   // 착지 직전 정지 구간(히트스톱)과 살짝 눌렸다 튕기는 정착 한 번을 덧붙인다. 손/덱에서
   // 처음 나와 곧장 최종 위치로 가는 "차가운(cold)" 비행(그냥 내기 등)에 쓴다.
@@ -726,7 +745,7 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
   // 원인이 됐는데, keyframe 값 자체를 정지시키면 브라우저가 평소 이동과 완전히 동일한
   // 방식(추가 JS 개입 없이)으로 처리해서 훨씬 매끄럽다. 모든 스타일을 같은 총 시간(DUR)
   // 으로 맞춰서 "덱은 빠르고 손은 느리고..." 식으로 제각각 다르게 느껴지던 것도 없앴다.
-  function flyCard(elm, dx, dy, style, delay = 0, primaryMover = false, sweepStyle = false) {
+  function flyCard(elm, dx, dy, style, delay = 0, primaryMover = false, sweepStyle = false, size = null) {
     elm.classList.remove('pop');
     elm.style.transform = '';
     const myGen = cancelPriorAnim(elm);
@@ -761,7 +780,9 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     // sweepStyle: 경유지 없이도 이미 부딪혀 짝이 된 채로 캡처되어 함께 쓸려가는 바닥 짝
     // (animateNewCards의 isSweptCapture) - flyCardViaMeeting의 스윕 구간과 정확히 같은
     // 모양(되감기 자세 없음)으로 재생해서 "함께 쓸려 들어간다"는 게 보이게 한다.
-    const { keyframes, easing } = sweepStyle ? buildSweepKeyframes(dx, dy) : buildFlightKeyframes(style, dx, dy);
+    const built = sweepStyle ? buildSweepKeyframes(dx, dy) : buildFlightKeyframes(style, dx, dy);
+    const { easing } = built;
+    const keyframes = size ? resizeKeyframes(built.keyframes, lerp(size.fromK, 1), size.w, size.h) : built.keyframes;
 
     const anim = elm.animate(keyframes, { duration: DUR, easing, delay, fill: delay > 0 ? 'both' : 'none' });
 
@@ -814,7 +835,7 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
   // 것을 완전히 덮어버리므로(그러면 접근 애니메이션이 안 보이는 버그가 생긴다), ①+②는
   // fill:'backwards'(자기 시작 전만 유지, 끝난 뒤엔 놓음)로, ③은 fill:'forwards'(자기
   // 시작 전엔 아무 효과 없음, 끝난 뒤엔 유지)로 서로 겹치는 구간이 전혀 없게 나눴다.
-  function flyCardViaMeeting(elm, dx, dy, style, delay, viaDx, viaDy, waitMs) {
+  function flyCardViaMeeting(elm, dx, dy, style, delay, viaDx, viaDy, waitMs, size = null) {
     elm.classList.remove('pop');
     elm.style.transform = '';
     const myGen = cancelPriorAnim(elm); // flyCard와 동일한 이유(이전 애니메이션이 남긴 예약된 콜백 무효화)
@@ -838,7 +859,10 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     // (마지막 keyframe이 이미 viaDx,viaDy이므로 별도 keyframe 없이 duration만 늘리면
     // WAAPI가 알아서 그 값을 끝까지 유지한다).
     const approach = buildApproachKeyframes(style, dx, dy, viaDx, viaDy, 1);
-    const anim1 = elm.animate(approach.keyframes, {
+    const approachFrames = size
+      ? resizeKeyframes(approach.keyframes, lerp(size.fromK, size.viaK), size.w, size.h)
+      : approach.keyframes;
+    const anim1 = elm.animate(approachFrames, {
       duration: phase1Dur, easing: approach.easing, delay,
       fill: delay > 0 ? 'backwards' : 'none',
     });
@@ -865,7 +889,11 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     // 새로 만들지 않고, 지금 한꺼번에 예약함 - 브라우저 컴포지터가 직접 타이밍을 맞춰서
     // JS 타이머 지연/오차가 끼어들 여지가 없다). fill:'forwards'라 anim1이 활성인 동안은
     // 전혀 개입하지 않다가, 정확히 sweepStart부터 넘겨받는다.
-    const { keyframes: sweepKeyframes, easing: sweepEasing } = buildSweepKeyframes(viaDx, viaDy);
+    const sweepBuilt = buildSweepKeyframes(viaDx, viaDy);
+    const sweepEasing = sweepBuilt.easing;
+    const sweepKeyframes = size
+      ? resizeKeyframes(sweepBuilt.keyframes, lerp(size.viaK, 1), size.w, size.h)
+      : sweepBuilt.keyframes;
     const anim2 = elm.animate(sweepKeyframes, {
       duration: sweepDur, easing: sweepEasing, delay: sweepStart, fill: 'forwards',
     });
@@ -1098,6 +1126,11 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
     const firstHitTime = handCaptures ? handHitTime : (deckCaptures ? deckHitTime : 0);
     const lastDepartureStart = (handCaptures || deckCaptures) ? (HOLD + firstHitTime) : 0;
 
+    // 보통 크기 카드 한 장의 실제 크기(바닥/내 손패 카드) - 미니 카드 크기 보정의 기준.
+    const fullCardElm = document.querySelector('.floor .card, #my-hand .card, #my-captured .card');
+    const fullRect = fullCardElm ? fullCardElm.getBoundingClientRect() : null;
+    const FULL_W = (fullRect && fullRect.width) || 78;
+
     document.querySelectorAll('.card[data-id]').forEach((elm) => {
       const id = elm.dataset.id;
       const now = elm.getBoundingClientRect();
@@ -1232,6 +1265,19 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
           : (deckPartner ? offsetRect(deckPartner.rect, HIT_DX, HIT_DY) : null);
       }
 
+      // 이 카드가 작은(미니) 카드로 도착하면(상대방 먹은패 더미) 출발/경유 지점에서는 보통
+      // 크기로 보이도록 크기 변화를 넘긴다 - 출발은 원래 크기(이전 위치에서의 실제 크기, 없으면
+      // 보통 카드), 바닥 짝을 때리는 순간도 보통 크기, 더미에 들어가며 작아진다.
+      let size = null;
+      if (now.width > 0 && now.width < FULL_W * 0.9) {
+        size = {
+          fromK: (old && old.width ? old.width : FULL_W) / now.width,
+          viaK: FULL_W / now.width,
+          w: now.width,
+          h: now.height,
+        };
+      }
+
       let anim;
       if (viaRect) {
         const viaDx = viaRect.left - now.left;
@@ -1241,10 +1287,10 @@ function animateNewCards(state, oldRects, oldHandRowRects, isNewGameEvent, oldFl
         // 부딪힌 자리에서 대기한다 - waitMs가 그 대기 시간이다.
         const waitMs = Math.max(0, globalSweepStart - (delay + approachDurFor(style)));
         if (DEBUG_ANIM) logAnim('[anim]', id, 'flyCardViaMeeting', { style, delay, dx, dy, viaDx, viaDy, waitMs });
-        anim = flyCardViaMeeting(elm, dx, dy, style, delay, viaDx, viaDy, waitMs);
+        anim = flyCardViaMeeting(elm, dx, dy, style, delay, viaDx, viaDy, waitMs, size);
       } else {
         if (DEBUG_ANIM) logAnim('[anim]', id, 'flyCard', { style, delay, dx, dy, primary });
-        anim = flyCard(elm, dx, dy, style, delay, primary, isSweptCapture);
+        anim = flyCard(elm, dx, dy, style, delay, primary, isSweptCapture, size);
       }
       if (primary || willCapture(elm)) primaryAnims.push(anim);
     });
